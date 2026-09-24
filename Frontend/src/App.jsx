@@ -1,0 +1,120 @@
+import React, { useState, useEffect } from 'react';
+import { LocalDB, hashPassword, randomSalt } from './lib/db';
+import { ToastProvider, useToast } from './components/UI';
+import PricesPage from './pages/PricesPage';
+import FormulaPage from './pages/FormulaPage';
+import UsersPage from './pages/UsersPage';
+import './index.css';
+
+const SESSION_KEY = 'priceLadderSession';
+
+function Shell({ user, onLogout }) {
+  const [tab, setTab] = useState('prices');
+  const isAdmin = user.role === 'admin';
+
+  return (
+    <div className="app">
+      <div className="topbar">
+        <div className="brand"><span className="brand-mark">PL</span> Price Ladder</div>
+        {isAdmin && (
+          <div className="tabs">
+            <div className={`tab ${tab === 'prices' ? 'active' : ''}`} onClick={() => setTab('prices')}>Price List</div>
+            <div className={`tab ${tab === 'users' ? 'active' : ''}`} onClick={() => setTab('users')}>Manage Users</div>
+            <div className={`tab ${tab === 'formula' ? 'active' : ''}`} onClick={() => setTab('formula')}>Formula & Items</div>
+          </div>
+        )}
+        <div className="spacer"></div>
+        <div className="who">
+          <span className={`role-badge ${isAdmin ? 'badge-admin' : ''}`}>{isAdmin ? 'Admin' : 'Team'}</span>
+          <span>{user.name}</span>
+          <button className="btn btn-ghost btn-sm" onClick={onLogout}>Log out</button>
+        </div>
+      </div>
+      <div className="content">
+        {tab === 'prices' && <PricesPage role={user.role} />}
+        {tab === 'users' && isAdmin && <UsersPage currentUser={user} />}
+        {tab === 'formula' && isAdmin && <FormulaPage />}
+      </div>
+    </div>
+  );
+}
+
+function AuthWall({ onLogin }) {
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const toast = useToast();
+
+  useEffect(() => {
+    LocalDB.collection('users').limit(1).get().then(snap => {
+      if (snap.empty) setNeedsSetup(true);
+      else {
+        const session = JSON.parse(localStorage.getItem(SESSION_KEY));
+        if (session?.email) {
+          LocalDB.collection('users').doc(session.email).get().then(uSnap => {
+            if (uSnap.exists) onLogin(uSnap.data());
+          });
+        }
+      }
+      setLoading(false);
+    });
+  }, [onLogin]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const email = fd.get('email').trim().toLowerCase();
+    const pw = fd.get('password');
+    
+    if (needsSetup) {
+      if (pw !== fd.get('password2')) return toast('Passwords do not match', 'error');
+      const salt = randomSalt();
+      const passwordHash = await hashPassword(pw, salt);
+      const user = { email, name: fd.get('name'), role: 'admin', salt, passwordHash };
+      await LocalDB.collection('users').doc(email).set(user);
+      await LocalDB.doc('config/formula').set({ pct1: 0, pct2: 0, pctFloor: 0, currency: '₹' });
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ email }));
+      onLogin(user);
+      toast('Admin created', 'success');
+    } else {
+      const snap = await LocalDB.collection('users').doc(email).get();
+      if (!snap.exists) return toast('No account found', 'error');
+      const u = snap.data();
+      const hash = await hashPassword(pw, u.salt);
+      if (hash !== u.passwordHash) return toast('Wrong password', 'error');
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ email }));
+      onLogin(u);
+    }
+  };
+
+  if (loading) return <div className="center-screen"><div className="fatal"><h1>Loading...</h1></div></div>;
+
+  return (
+    <div className="center-screen">
+      <div className="auth-card">
+        <h1>{needsSetup ? 'Create Admin' : 'Sign In'}</h1>
+        <form onSubmit={handleSubmit}>
+          {needsSetup && <div className="field"><label>Name</label><input name="name" required /></div>}
+          <div className="field"><label>Email</label><input name="email" type="email" required /></div>
+          <div className="field"><label>Password</label><input name="password" type="password" required /></div>
+          {needsSetup && <div className="field"><label>Confirm</label><input name="password2" type="password" required /></div>}
+          <button className="btn btn-block" type="submit">{needsSetup ? 'Setup' : 'Login'}</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  
+  const handleLogout = () => {
+    localStorage.removeItem(SESSION_KEY);
+    setUser(null);
+  };
+
+  return (
+    <ToastProvider>
+      {user ? <Shell user={user} onLogout={handleLogout} /> : <AuthWall onLogin={setUser} />}
+    </ToastProvider>
+  );
+}
