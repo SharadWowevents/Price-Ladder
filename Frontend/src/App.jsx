@@ -10,7 +10,29 @@ const SESSION_KEY = 'priceLadderSession';
 
 function Shell({ user, onLogout }) {
   const [tab, setTab] = useState('prices');
+  const [showChangePw, setShowChangePw] = useState(false);
   const isAdmin = user.role === 'admin';
+  const toast = useToast();
+
+  const handleChangePw = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const cur = fd.get('current');
+    const next = fd.get('newPw');
+    
+    if (!next || next.length < 6) return toast('New password needs at least 6 characters.', 'error');
+    
+    const snap = await LocalDB.collection('users').doc(user.email).get();
+    const u = snap.data();
+    const curHash = await hashPassword(cur, u.salt);
+    if (curHash !== u.passwordHash) return toast('Current password is wrong.', 'error');
+    
+    const salt = randomSalt();
+    const passwordHash = await hashPassword(next, salt);
+    await LocalDB.collection('users').doc(user.email).update({ salt, passwordHash });
+    toast('Password updated.', 'success');
+    setShowChangePw(false);
+  };
 
   return (
     <div className="app">
@@ -27,6 +49,7 @@ function Shell({ user, onLogout }) {
         <div className="who">
           <span className={`role-badge ${isAdmin ? 'badge-admin' : ''}`}>{isAdmin ? 'Admin' : 'Team'}</span>
           <span>{user.name}</span>
+          <button className="link-btn" onClick={() => setShowChangePw(true)}>Change password</button>
           <button className="btn btn-ghost btn-sm" onClick={onLogout}>Log out</button>
         </div>
       </div>
@@ -35,6 +58,23 @@ function Shell({ user, onLogout }) {
         {tab === 'users' && isAdmin && <UsersPage currentUser={user} />}
         {tab === 'formula' && isAdmin && <FormulaPage />}
       </div>
+      
+      {showChangePw && (
+        <div className="modal-overlay" onClick={(e) => e.target.className === 'modal-overlay' && setShowChangePw(false)}>
+          <div className="modal">
+            <h3>Change your password</h3>
+            <p className="hint">Signed in as {user.email}</p>
+            <form onSubmit={handleChangePw}>
+              <div className="field"><label>Current password</label><input name="current" type="password" required /></div>
+              <div className="field"><label>New password</label><input name="newPw" type="password" minLength="6" required /></div>
+              <div className="modal-actions">
+                <button type="button" className="btn btn-ghost" onClick={() => setShowChangePw(false)}>Cancel</button>
+                <button type="submit" className="btn">Save</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

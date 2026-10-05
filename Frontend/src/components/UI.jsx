@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { computeGP } from '../lib/utils';
+import { computeGP, fmtMoney } from '../lib/utils';
 
 export const ToastContext = createContext();
 
@@ -46,7 +46,7 @@ export const GpLine = ({ price, costPrice, currency }) => {
   const sign = gp.rupees > 0 ? '+' : '';
   return (
     <div className={`gp-line ${gp.rupees < 0 ? 'gp-neg' : 'gp-pos'}`}>
-      GP {sign}{gp.rupees} &middot; {sign}{gp.percent}%
+      GP {sign}{fmtMoney(gp.rupees, currency)} &middot; {sign}{gp.percent}%
     </div>
   );
 };
