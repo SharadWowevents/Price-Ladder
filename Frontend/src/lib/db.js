@@ -1,4 +1,4 @@
-const API_URL = 'http://localhost:5004/api';
+const API_URL = '/api';
 
 export const LocalDB = (() => {
   const makeSnap = (id, data) => ({ exists: data !== undefined && data !== null, id, data: () => data });
