@@ -143,12 +143,12 @@ export default function BackupPage({ defaultCollection = 'all' }) {
     }
   };
 
-  // Calculate days remaining before 14-day auto-purge
+  // Calculate days remaining before 30-day auto-purge
   const formatRetention = (deletedAt) => {
     if (!deletedAt) return '—';
     const delTime = new Date(deletedAt).getTime();
     if (isNaN(delTime)) return '—';
-    const expiresAt = delTime + (14 * 24 * 60 * 60 * 1000);
+    const expiresAt = delTime + (30 * 24 * 60 * 60 * 1000);
     const msLeft = expiresAt - Date.now();
     if (msLeft <= 0) return 'Expiring soon';
     const daysLeft = Math.ceil(msLeft / (1000 * 60 * 60 * 24));
@@ -170,8 +170,8 @@ export default function BackupPage({ defaultCollection = 'all' }) {
           <span className="badge badge-admin">
             {totalBackupCount} total backed up
           </span>
-          <span className="badge badge-team" title="Records older than 14 days are automatically purged">
-            14-Day Auto Retention
+          <span className="badge badge-team" title="Records older than 30 days are automatically purged">
+            30-Day Auto Retention
           </span>
         </div>
       </div>
