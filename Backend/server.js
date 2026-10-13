@@ -15,23 +15,23 @@ const documentSchema = new mongoose.Schema({
   _id: { type: String, required: true }
 }, { strict: false, versionKey: false });
 
-// Retention period for deleted backup records: 2 weeks (14 days)
-const TWO_WEEKS_SECONDS = 14 * 24 * 60 * 60;
-const TWO_WEEKS_MS = TWO_WEEKS_SECONDS * 1000;
+// Retention period for deleted backup records: 4 weeks (30 days)
+const ONE_MONTH_SECONDS = 30 * 24 * 60 * 60;
+const ONE_MONTH_MS = ONE_MONTH_SECONDS * 1000;
 
-// Deleted Document Schema for storing backup copies of deleted documents (auto-expires after 2 weeks)
+// Deleted Document Schema for storing backup copies of deleted documents (auto-expires after 4 weeks)
 const deletedDocumentSchema = new mongoose.Schema({
   _id: { type: String, required: true },
-  deletedAt: { type: Date, default: Date.now, expires: TWO_WEEKS_SECONDS },
+  deletedAt: { type: Date, default: Date.now, expires: ONE_MONTH_SECONDS },
   originalCollection: { type: String }
 }, { strict: false, versionKey: false });
 
 // History Schema uses default Auto-ObjectIDs
 const historySchema = new mongoose.Schema({}, { strict: false, versionKey: false });
 
-// Deleted History Schema (auto-expires after 2 weeks)
+// Deleted History Schema (auto-expires after 4 weeks)
 const deletedHistorySchema = new mongoose.Schema({
-  deletedAt: { type: Date, default: Date.now, expires: TWO_WEEKS_SECONDS },
+  deletedAt: { type: Date, default: Date.now, expires: ONE_MONTH_SECONDS },
   originalCollection: { type: String }
 }, { strict: false, versionKey: false });
 
@@ -181,12 +181,12 @@ const enqueueDelete = (collection, id) => {
 };
 
 /**
- * Purges any backup records in deleted_<collection> older than 2 weeks (14 days)
+ * Purges any backup records in deleted_<collection> older than 4 weeks (30 days)
  * to optimize database storage.
  */
 const purgeOldDeletedData = async () => {
   try {
-    const cutoffDate = new Date(Date.now() - TWO_WEEKS_MS);
+    const cutoffDate = new Date(Date.now() - ONE_MONTH_MS);
     const cutoffIso = cutoffDate.toISOString();
 
     await Promise.all(
@@ -198,7 +198,7 @@ const purgeOldDeletedData = async () => {
           ]
         });
         if (result.deletedCount > 0) {
-          console.log(`[Storage Cleanup] Purged ${result.deletedCount} expired record(s) (>2 weeks old) from deleted_${colName}`);
+          console.log(`[Storage Cleanup] Purged ${result.deletedCount} expired record(s) (>4 weeks old) from deleted_${colName}`);
         }
       })
     );
@@ -250,7 +250,7 @@ const reconcileDeletedData = async () => {
       })
     );
 
-    // 3. Purge any deleted backup records older than 2 weeks
+    // 3. Purge any deleted backup records older than 4 weeks
     await purgeOldDeletedData();
   } catch (err) {
     console.error('Error during crash recovery reconciliation:', err);
