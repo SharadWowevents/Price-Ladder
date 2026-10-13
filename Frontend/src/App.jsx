@@ -4,6 +4,7 @@ import { ToastProvider, useToast } from './components/UI';
 import PricesPage from './pages/PricesPage';
 import FormulaPage from './pages/FormulaPage';
 import UsersPage from './pages/UsersPage';
+import BackupPage from './pages/BackupPage';
 import './index.css';
 
 const SESSION_KEY = 'priceLadderSession';
@@ -43,6 +44,7 @@ function Shell({ user, onLogout }) {
             <div className={`tab ${tab === 'prices' ? 'active' : ''}`} onClick={() => setTab('prices')}>Price List</div>
             <div className={`tab ${tab === 'users' ? 'active' : ''}`} onClick={() => setTab('users')}>Manage Users</div>
             <div className={`tab ${tab === 'formula' ? 'active' : ''}`} onClick={() => setTab('formula')}>Formula & Items</div>
+            <div className={`tab ${tab === 'backup' ? 'active' : ''}`} onClick={() => setTab('backup')}>Backup & Restore</div>
           </div>
         )}
         <div className="spacer"></div>
@@ -57,6 +59,7 @@ function Shell({ user, onLogout }) {
         {tab === 'prices' && <PricesPage role={user.role} />}
         {tab === 'users' && isAdmin && <UsersPage currentUser={user} />}
         {tab === 'formula' && isAdmin && <FormulaPage />}
+        {tab === 'backup' && isAdmin && <BackupPage />}
       </div>
       
       {showChangePw && (

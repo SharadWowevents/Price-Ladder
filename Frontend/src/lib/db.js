@@ -46,8 +46,12 @@ export const LocalDB = (() => {
     }
     
     async delete() {
+      if (this.col.startsWith('deleted_')) {
+        throw new Error('Deleting data from backup collections is not permitted. You can only restore it.');
+      }
       await fetch(`${API_URL}/${this.col}/${this.id}`, { method: 'DELETE' });
       await notifyListeners(this.col);
+      await notifyListeners(`deleted_${this.col}`);
     }
     
     onSnapshot(cb, err) {
@@ -150,9 +154,44 @@ export const LocalDB = (() => {
     }
   }
 
+  const restore = async (collection, id) => {
+    const baseCol = String(collection).replace(/^deleted_/, '');
+    const res = await fetch(`${API_URL}/restore/${baseCol}/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Failed to restore record.');
+
+    await Promise.all([
+      notifyListeners(baseCol),
+      notifyListeners(`deleted_${baseCol}`),
+      ...(baseCol === 'items' ? [notifyListeners('quotes'), notifyListeners('deleted_quotes')] : [])
+    ]);
+    return json;
+  };
+
+  const restoreBatch = async ({ collection = 'all', fromDateTime = '', toDateTime = '', limitCount = '', ids = null }) => {
+    const res = await fetch(`${API_URL}/restore-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collection, fromDateTime, toDateTime, limitCount, ids })
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Failed to restore records.');
+
+    const cols = ['items', 'quotes', 'users', 'config', 'history'];
+    await Promise.all(
+      cols.flatMap(c => [notifyListeners(c), notifyListeners(`deleted_${c}`)])
+    );
+    return json;
+  };
+
   return { 
     collection: (name) => new Col(name), 
-    doc: (path) => new Doc(path.split('/')[0], path.split('/')[1]) 
+    doc: (path) => new Doc(path.split('/')[0], path.split('/')[1]),
+    restore,
+    restoreBatch
   };
 })();
 

@@ -382,11 +382,134 @@ app.patch('/api/:collection/:id', async (req, res) => {
   }
 });
 
+// Normalize collection name (e.g., "deleted_users" or "deleted_user" -> "users")
+const resolveBaseCollection = (name) => {
+  const raw = String(name || '').replace(/^deleted_/, '');
+  if (models[raw]) return raw;
+  if (models[`${raw}s`]) return `${raw}s`;
+  throw new Error(`Collection ${name} not found`);
+};
+
+/**
+ * Restores a single document from deleted_<collection> back into original <collection>:
+ * 1. Reads backup record from deleted_<collection>
+ * 2. Writes clean document back into original <collection>
+ * 3. Verifies existence in original <collection>, then deletes from deleted_<collection>
+ * 4. If restoring an item, also restores its paired quote from deleted_quotes (if present)
+ */
+const processRestoreOperation = async (collection, id) => {
+  const baseCol = resolveBaseCollection(collection);
+  const OriginalModel = getModel(baseCol);
+  const DeletedModel = getDeletedModel(baseCol);
+
+  const deletedDoc = await DeletedModel.findById(id);
+  if (!deletedDoc) return false;
+
+  const { _id, deletedAt, originalCollection, ...cleanData } = deletedDoc.toObject();
+
+  // Step 1: Copy back to original collection first
+  await OriginalModel.findByIdAndUpdate(
+    _id,
+    { ...cleanData, _id },
+    { upsert: true, returnDocument: 'after', overwrite: true }
+  );
+
+  // Step 2: Verify it exists in original collection before removing from deleted_<collection>
+  const verified = await OriginalModel.exists({ _id });
+  if (!verified) {
+    throw new Error(`Restore verification failed for ${baseCol}/${_id}`);
+  }
+
+  // Step 3: Delete from deleted_<collection>
+  await DeletedModel.findByIdAndDelete(_id);
+
+  // Step 4: If an item was restored, also restore its paired quote in deleted_quotes if present
+  if (baseCol === 'items') {
+    const deletedQuote = await deletedModels.quotes.findById(_id);
+    if (deletedQuote) {
+      const { _id: qId, deletedAt: qDel, originalCollection: qCol, ...quoteData } = deletedQuote.toObject();
+      await models.quotes.findByIdAndUpdate(qId, { ...quoteData, _id: qId }, { upsert: true, returnDocument: 'after', overwrite: true });
+      await deletedModels.quotes.findByIdAndDelete(qId);
+    }
+  }
+
+  return true;
+};
+
+// POST restore a single document from backup
+app.post('/api/restore/:collection/:id', async (req, res) => {
+  try {
+    const restored = await processRestoreOperation(req.params.collection, req.params.id);
+    if (!restored) {
+      return res.status(404).json({ error: 'Record not found in backup collection.' });
+    }
+    res.json({ success: true, id: req.params.id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// POST batch restore by date/time range, collection, optional IDs, and max count
+app.post('/api/restore-batch', async (req, res) => {
+  try {
+    const { collection = 'all', fromDateTime, toDateTime, limitCount, ids } = req.body || {};
+    const targetCollections = collection === 'all'
+      ? ['items', 'users', 'quotes', 'config', 'history']
+      : [resolveBaseCollection(collection)];
+
+    const fromTime = fromDateTime ? new Date(fromDateTime).getTime() : null;
+    const toTime = toDateTime ? new Date(toDateTime).getTime() : null;
+    const idSet = Array.isArray(ids) && ids.length > 0 ? new Set(ids.map(String)) : null;
+    const maxItems = Number(limitCount) > 0 ? Number(limitCount) : Infinity;
+
+    // Gather candidate backup records across target collections
+    const candidates = [];
+    for (const colName of targetCollections) {
+      const DeletedModel = deletedModels[colName];
+      if (!DeletedModel) continue;
+      const docs = await DeletedModel.find({}).lean();
+      for (const d of docs) {
+        const key = `${colName}:${d._id}`;
+        if (idSet && !idSet.has(String(d._id)) && !idSet.has(key)) continue;
+        const delTime = d.deletedAt ? new Date(d.deletedAt).getTime() : 0;
+        if (fromTime && !isNaN(fromTime) && delTime < fromTime) continue;
+        if (toTime && !isNaN(toTime) && delTime > toTime) continue;
+        candidates.push({ colName, id: d._id, deletedAt: delTime });
+      }
+    }
+
+    // Sort newest deleted first so the most recent deletions are prioritized when limitCount is used
+    candidates.sort((a, b) => b.deletedAt - a.deletedAt);
+    const toRestore = candidates.slice(0, maxItems);
+
+    let restoredCount = 0;
+    const restoredItems = [];
+    for (const item of toRestore) {
+      const ok = await processRestoreOperation(item.colName, item.id);
+      if (ok) {
+        restoredCount++;
+        restoredItems.push({ collection: item.colName, id: item.id });
+      }
+    }
+
+    res.json({ success: true, restoredCount, restoredItems });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // DELETE single document (Copy first to deleted_<collectionName>, then delete from original via queue)
 app.delete('/api/:collection/:id', async (req, res) => {
   try {
     const colName = req.params.collection;
     const docId = req.params.id;
+
+    // Clients are NOT allowed to delete data from backup (deleted_*) collections
+    if (String(colName).startsWith('deleted_')) {
+      return res.status(403).json({
+        error: 'Deleting data from backup collections is disabled. You can only restore records from backup.'
+      });
+    }
 
     // If deleting from an active collection, use the backup-first queue workflow
     if (models[colName] && deletedModels[colName]) {
@@ -394,10 +517,7 @@ app.delete('/api/:collection/:id', async (req, res) => {
       return res.json({ success: true, backedUpTo: `deleted_${colName}` });
     }
 
-    // Fallback if deleting directly from a deleted_* collection
-    const Model = getModel(colName);
-    await Model.findByIdAndDelete(docId);
-    res.json({ success: true });
+    res.status(400).json({ error: `Collection ${colName} does not support deletion.` });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
