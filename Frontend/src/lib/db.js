@@ -4,6 +4,24 @@ export const LocalDB = (() => {
   const makeSnap = (id, data) => ({ exists: data !== undefined && data !== null, id, data: () => data });
   const makeQuerySnap = (arr) => ({ empty: arr.length === 0, docs: arr.map(x => makeSnap(x.id, x.data)) });
 
+  const listeners = new Map();
+
+  const registerListener = (col, fn) => {
+    if (!listeners.has(col)) listeners.set(col, new Set());
+    listeners.get(col).add(fn);
+    return () => listeners.get(col)?.delete(fn);
+  };
+
+  const notifyListeners = async (col) => {
+    const set = listeners.get(col);
+    if (!set || set.size === 0) return;
+    await Promise.all(Array.from(set).map(fn => fn()));
+    // Wait for browser paint so table DOM updates before post-write callbacks (like toast) run
+    if (typeof window !== 'undefined' && window.requestAnimationFrame) {
+      await new Promise(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+    }
+  };
+
   class Doc {
     constructor(col, id) { this.col = col; this.id = id; }
     
@@ -17,30 +35,38 @@ export const LocalDB = (() => {
       await fetch(`${API_URL}/${this.col}/${this.id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v)
       });
+      await notifyListeners(this.col);
     }
     
     async update(v) {
       await fetch(`${API_URL}/${this.col}/${this.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v)
       });
+      await notifyListeners(this.col);
     }
     
     async delete() {
       await fetch(`${API_URL}/${this.col}/${this.id}`, { method: 'DELETE' });
+      await notifyListeners(this.col);
     }
     
     onSnapshot(cb, err) {
       let active = true;
-      const poll = async () => {
+      const fetchAndEmit = async () => {
         if (!active) return;
         try {
           const snap = await this.get();
-          cb(snap);
-        } catch(e) { if(err) err(e); }
-        if (active) setTimeout(poll, 3000); // Poll every 3 seconds for real-time feel
+          if (active) cb(snap);
+        } catch(e) { if (err && active) err(e); }
+      };
+      const unregister = registerListener(this.col, fetchAndEmit);
+      const poll = async () => {
+        if (!active) return;
+        await fetchAndEmit();
+        if (active) setTimeout(poll, 3000);
       };
       poll();
-      return () => { active = false; };
+      return () => { active = false; unregister(); };
     }
     
     collection(sub) { return new Col(`${this.col}_${this.id}_${sub}`); }
@@ -62,6 +88,7 @@ export const LocalDB = (() => {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(v)
       });
       const json = await res.json();
+      await notifyListeners(this.name);
       return this.doc(json.id);
     }
     
@@ -84,29 +111,42 @@ export const LocalDB = (() => {
         limit: function() { return this; },
         onSnapshot: (cb, err) => {
           let active = true;
-          const poll = async () => {
+          const fetchAndEmit = async () => {
             if (!active) return;
             try {
               const snap = await self.get();
-              cb(makeQuerySnap(sortFn(snap.docs.map(d => ({ id: d.id, data: d.data() })))));
-            } catch(e) { if(err) err(e); }
+              if (active) cb(makeQuerySnap(sortFn(snap.docs.map(d => ({ id: d.id, data: d.data() })))));
+            } catch(e) { if (err && active) err(e); }
+          };
+          const unregister = registerListener(self.name, fetchAndEmit);
+          const poll = async () => {
+            if (!active) return;
+            await fetchAndEmit();
             if (active) setTimeout(poll, 3000);
           };
           poll();
-          return () => { active = false; };
+          return () => { active = false; unregister(); };
         }
       };
     }
     
     onSnapshot(cb, err) {
       let active = true;
+      const fetchAndEmit = async () => {
+        if (!active) return;
+        try {
+          const snap = await this.get();
+          if (active) cb(snap);
+        } catch(e) { if (err && active) err(e); }
+      };
+      const unregister = registerListener(this.name, fetchAndEmit);
       const poll = async () => {
         if (!active) return;
-        try { cb(await this.get()); } catch(e) { if(err) err(e); }
+        await fetchAndEmit();
         if (active) setTimeout(poll, 3000);
       };
       poll();
-      return () => { active = false; };
+      return () => { active = false; unregister(); };
     }
   }
 

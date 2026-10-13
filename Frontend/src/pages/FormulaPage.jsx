@@ -7,6 +7,10 @@ const EditableRow = ({ item, formula, onSave, onDelete }) => {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(item);
 
+  useEffect(() => {
+    setForm(item);
+  }, [item]);
+
   const listPrice = listPriceOf(item);
   const pct = effectivePct(item, formula);
   const q = computeQuote(listPrice, pct);
@@ -25,12 +29,25 @@ const EditableRow = ({ item, formula, onSave, onDelete }) => {
       <td className="num-col floor-cell price-cell"><span className="amount">{fmtMoney(q.floorPrice, formula?.currency)}</span><GpLine price={q.floorPrice} costPrice={item.costPrice} currency={formula?.currency}/></td>
       <td>
         <div className="inline-actions">
-          <button className="icon-btn" onClick={() => setEditing(true)}>Edit</button>
+          <button className="icon-btn" onClick={() => { setForm(item); setEditing(true); }}>Edit</button>
           <button className="icon-btn" onClick={() => onDelete(item.id)}>Del</button>
         </div>
       </td>
     </tr>
   );
+
+  const handleSave = async () => {
+    const updated = {
+      ...form,
+      name: String(form.name || '').trim(),
+      costPrice: Number(form.costPrice),
+      amountAdded: Number(form.amountAdded),
+      pct1: Number(form.pct1),
+      pct2: Number(form.pct2),
+      pctFloor: Number(form.pctFloor)
+    };
+    await onSave(updated, () => setEditing(false));
+  };
 
   return (
     <tr className="editing-cell">
@@ -43,7 +60,7 @@ const EditableRow = ({ item, formula, onSave, onDelete }) => {
       <td colSpan="4"></td>
       <td>
         <div className="inline-actions">
-          <button className="icon-btn icon-btn-primary" onClick={() => { onSave(form); setEditing(false); }}>Save</button>
+          <button className="icon-btn icon-btn-primary" onClick={handleSave}>Save</button>
           <button className="icon-btn" onClick={() => { setForm(item); setEditing(false); }}>Cancel</button>
         </div>
       </td>
@@ -80,7 +97,8 @@ export default function FormulaPage() {
 
   const handleAddItem = async (e) => {
     e.preventDefault();
-    const fd = new FormData(e.target);
+    const formEl = e.target;
+    const fd = new FormData(formEl);
     const name = fd.get('name');
     const costPrice = Number(fd.get('cost'));
     const amountAdded = Number(fd.get('added'));
@@ -95,8 +113,6 @@ export default function FormulaPage() {
     const id = slugId(name);
     const now = new Date().toISOString();
     
-    await LocalDB.collection('items').doc(id).set({ ...item, createdAt: now });
-    
     const listPrice = listPriceOf(item);
     const q = computeQuote(listPrice, item);
     const currency = formula?.currency || CURRENCY_DEFAULT;
@@ -107,14 +123,13 @@ export default function FormulaPage() {
       boundary1: q.boundary1, boundary2: q.boundary2, floorPrice: q.floorPrice,
       pct1, pct2, pctFloor, currency, changedAt: now
     });
+    await LocalDB.collection('items').doc(id).set({ ...item, createdAt: now });
     
+    formEl.reset();
     toast('Item added', 'success');
-    e.target.reset();
   };
 
-  const updateItem = async (updated) => {
-    await LocalDB.collection('items').doc(updated.id).update(updated);
-    
+  const updateItem = async (updated, onDoneEditing) => {
     const listPrice = listPriceOf(updated);
     const q = computeQuote(listPrice, updated);
     const currency = formula?.currency || CURRENCY_DEFAULT;
@@ -126,13 +141,15 @@ export default function FormulaPage() {
       boundary1: q.boundary1, boundary2: q.boundary2, floorPrice: q.floorPrice,
       pct1: updated.pct1, pct2: updated.pct2, pctFloor: updated.pctFloor, currency, changedAt: now
     });
+    if (onDoneEditing) onDoneEditing();
+    await LocalDB.collection('items').doc(updated.id).update(updated);
     toast('Item updated', 'success');
   };
 
   const deleteItem = async (id) => {
     if (!window.confirm('Delete this item from the price list? This cannot be undone.')) return;
-    await LocalDB.collection('items').doc(id).delete();
     await LocalDB.collection('quotes').doc(id).delete();
+    await LocalDB.collection('items').doc(id).delete();
     toast('Item deleted', 'success');
   };
 
