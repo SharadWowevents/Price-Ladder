@@ -5,15 +5,60 @@ import PricesPage from './pages/PricesPage';
 import FormulaPage from './pages/FormulaPage';
 import UsersPage from './pages/UsersPage';
 import BackupPage from './pages/BackupPage';
+import PrivacyPolicyModal from './components/PrivacyPolicyModal';
 import './index.css';
 
 const SESSION_KEY = 'priceLadderSession';
 
-function Shell({ user, onLogout }) {
+function Shell({ user, onLogout, onUpdateUser }) {
   const [tab, setTab] = useState('prices');
   const [showChangePw, setShowChangePw] = useState(false);
+  const [showViewPrivacyModal, setShowViewPrivacyModal] = useState(false);
+
+  // Check if user has already agreed (in DB user profile or in localStorage)
+  const isAgreed = Boolean(
+    user?.privacyPolicyAgreed ||
+    (user?.email && localStorage.getItem(`privacyPolicyAgreed_${user.email}`) === 'true')
+  );
+  const [showPrivacyModal, setShowPrivacyModal] = useState(!isAgreed);
+
+  useEffect(() => {
+    const agreed = Boolean(
+      user?.privacyPolicyAgreed ||
+      (user?.email && localStorage.getItem(`privacyPolicyAgreed_${user.email}`) === 'true')
+    );
+    if (!agreed) {
+      setShowPrivacyModal(true);
+    }
+  }, [user?.email, user?.privacyPolicyAgreed]);
+
   const isAdmin = user.role === 'admin';
   const toast = useToast();
+
+  const handleAgreePrivacy = async () => {
+    const now = new Date().toISOString();
+    try {
+      await LocalDB.collection('users').doc(user.email).update({
+        privacyPolicyAgreed: true,
+        privacyPolicyAgreedAt: now
+      });
+      localStorage.setItem(`privacyPolicyAgreed_${user.email}`, 'true');
+      if (onUpdateUser) {
+        onUpdateUser(prev => ({
+          ...prev,
+          privacyPolicyAgreed: true,
+          privacyPolicyAgreedAt: now
+        }));
+      }
+      setShowPrivacyModal(false);
+      toast('Privacy policy accepted.', 'success');
+    } catch (err) {
+      // Fallback: even if network has a hiccup, record in localStorage
+      localStorage.setItem(`privacyPolicyAgreed_${user.email}`, 'true');
+      setShowPrivacyModal(false);
+      toast('Privacy policy accepted.', 'success');
+    }
+  };
 
   const handleChangePw = async (e) => {
     e.preventDefault();
@@ -52,6 +97,7 @@ function Shell({ user, onLogout }) {
           <span className={`role-badge ${isAdmin ? 'badge-admin' : ''}`}>{isAdmin ? 'Admin' : 'Team'}</span>
           <span>{user.name}</span>
           <button className="link-btn" onClick={() => setShowChangePw(true)}>Change password</button>
+          <button className="link-btn" onClick={() => setShowViewPrivacyModal(true)}>Privacy Policy</button>
           <button className="btn btn-ghost btn-sm" onClick={onLogout}>Log out</button>
         </div>
       </div>
@@ -78,6 +124,22 @@ function Shell({ user, onLogout }) {
           </div>
         </div>
       )}
+
+      {/* Mandatory Privacy Policy modal on login until accepted */}
+      <PrivacyPolicyModal
+        isOpen={showPrivacyModal}
+        isMandatory={true}
+        onAgree={handleAgreePrivacy}
+        onLogout={onLogout}
+      />
+
+      {/* Voluntary view Privacy Policy modal */}
+      <PrivacyPolicyModal
+        isOpen={showViewPrivacyModal}
+        isMandatory={false}
+        onClose={() => setShowViewPrivacyModal(false)}
+        agreedAt={user.privacyPolicyAgreedAt}
+      />
     </div>
   );
 }
@@ -157,7 +219,7 @@ export default function App() {
 
   return (
     <ToastProvider>
-      {user ? <Shell user={user} onLogout={handleLogout} /> : <AuthWall onLogin={setUser} />}
+      {user ? <Shell user={user} onLogout={handleLogout} onUpdateUser={setUser} /> : <AuthWall onLogin={setUser} />}
     </ToastProvider>
   );
 }
