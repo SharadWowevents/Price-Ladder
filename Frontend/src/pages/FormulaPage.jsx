@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { LocalDB } from '../lib/db';
-import { fmtMoney, listPriceOf, effectivePct, computeQuote, slugId, recordHistory, recomputeAllQuotes, parseBulkRows, CURRENCY_DEFAULT } from '../lib/utils';
+import { fmtMoney, listPriceOf, effectivePct, computeQuote, slugId, recordHistory, parseBulkRows, CURRENCY_DEFAULT } from '../lib/utils';
 import { GpLine, useToast } from '../components/UI';
 
 const EditableRow = ({ item, formula, onSave, onDelete, categories }) => {
@@ -87,20 +87,27 @@ const EditableRow = ({ item, formula, onSave, onDelete, categories }) => {
 
 export default function FormulaPage() {
   const [formula, setFormula] = useState({ pct1: 0, pct2: 0, pctFloor: 0, currency: '₹' });
+  const [categoryFormulas, setCategoryFormulas] = useState({});
   const [items, setItems] = useState([]);
-  const [search, setSearch] = useState('');
-  const [tableCategoryFilter, setTableCategoryFilter] = useState('__all__');
   
-  // Default formula category search state
-  const [targetCategorySearch, setTargetCategorySearch] = useState('');
-  const [selectedTargetCategory, setSelectedTargetCategory] = useState('');
-  const [showFormulaCategoryDropdown, setShowFormulaCategoryDropdown] = useState(false);
-  const formulaCategoryRef = useRef(null);
+  // Category Formula form state
+  const [categoryName, setCategoryName] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [categoryPct1, setCategoryPct1] = useState(0);
+  const [categoryPct2, setCategoryPct2] = useState(0);
+  const [categoryPctFloor, setCategoryPctFloor] = useState(0);
+  const [currencySymbol, setCurrencySymbol] = useState(CURRENCY_DEFAULT);
+  const [showCategorySuggestions, setShowCategorySuggestions] = useState(false);
+  const categoryInputRef = useRef(null);
 
   // Add Item category search state
   const [addCategory, setAddCategory] = useState('');
   const [showAddCategoryDropdown, setShowAddCategoryDropdown] = useState(false);
   const addCategoryRef = useRef(null);
+
+  // Table search & filter state
+  const [search, setSearch] = useState('');
+  const [tableCategoryFilter, setTableCategoryFilter] = useState('__all__');
 
   // Pagination state (up to 50 items max)
   const [pageSize, setPageSize] = useState(10);
@@ -119,9 +126,31 @@ export default function FormulaPage() {
   const toast = useToast();
 
   useEffect(() => {
-    const unf = LocalDB.doc('config/formula').onSnapshot(snap => setFormula(snap.exists ? snap.data() : formula));
-    const uni = LocalDB.collection('items').orderBy('name').onSnapshot(snap => setItems(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    return () => { unf(); uni(); };
+    const unf = LocalDB.doc('config/formula').onSnapshot(snap => {
+      if (snap.exists) {
+        const d = snap.data();
+        setFormula(d);
+        if (d.currency) setCurrencySymbol(d.currency);
+        // If user hasn't selected a specific category yet, initialize inputs from defaults
+        if (!categoryName) {
+          setCategoryPct1(d.pct1 ?? 0);
+          setCategoryPct2(d.pct2 ?? 0);
+          setCategoryPctFloor(d.pctFloor ?? 0);
+        }
+      }
+    });
+
+    const unc = LocalDB.doc('config/categoryFormulas').onSnapshot(snap => {
+      if (snap.exists) {
+        setCategoryFormulas(snap.data() || {});
+      }
+    });
+
+    const uni = LocalDB.collection('items').orderBy('name').onSnapshot(snap => {
+      setItems(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+
+    return () => { unf(); unc(); uni(); };
   }, []);
 
   useEffect(() => {
@@ -131,8 +160,8 @@ export default function FormulaPage() {
   // Click outside listener for custom dropdowns
   useEffect(() => {
     const handleClickOutside = (e) => {
-      if (formulaCategoryRef.current && !formulaCategoryRef.current.contains(e.target)) {
-        setShowFormulaCategoryDropdown(false);
+      if (categoryInputRef.current && !categoryInputRef.current.contains(e.target)) {
+        setShowCategorySuggestions(false);
       }
       if (addCategoryRef.current && !addCategoryRef.current.contains(e.target)) {
         setShowAddCategoryDropdown(false);
@@ -142,9 +171,12 @@ export default function FormulaPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Compute distinct categories and item count per category
+  // Compute distinct categories across saved category formulas and existing items
   const allCategories = Array.from(
-    new Set(items.map(it => (it.category || '').trim()).filter(Boolean))
+    new Set([
+      ...Object.keys(categoryFormulas).map(k => k.trim()).filter(Boolean),
+      ...items.map(it => (it.category || '').trim()).filter(Boolean)
+    ])
   ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 
   const categoryCounts = items.reduce((acc, it) => {
@@ -153,15 +185,149 @@ export default function FormulaPage() {
     return acc;
   }, {});
 
-  // Category search filter in Default Formula
-  const matchingTargetCategories = allCategories.filter(cat => 
-    cat.toLowerCase().includes(targetCategorySearch.toLowerCase())
-  );
+  // Retrieve previously filled / saved values for a category
+  const getCategoryValues = (catName) => {
+    if (!catName) return { pct1: formula?.pct1 ?? 0, pct2: formula?.pct2 ?? 0, pctFloor: formula?.pctFloor ?? 0 };
+    const normalized = catName.trim().toLowerCase();
+
+    // 1. Check in saved categoryFormulas
+    const key = Object.keys(categoryFormulas).find(k => k.toLowerCase() === normalized);
+    if (key && categoryFormulas[key]) {
+      return {
+        pct1: categoryFormulas[key].pct1 ?? 0,
+        pct2: categoryFormulas[key].pct2 ?? 0,
+        pctFloor: categoryFormulas[key].pctFloor ?? 0,
+        currency: categoryFormulas[key].currency || formula?.currency || CURRENCY_DEFAULT
+      };
+    }
+
+    // 2. Check in existing items belonging to this category
+    const itemWithCat = items.find(it => (it.category || '').trim().toLowerCase() === normalized && (it.pct1 !== undefined || it.pct2 !== undefined || it.pctFloor !== undefined));
+    if (itemWithCat) {
+      return {
+        pct1: itemWithCat.pct1 ?? formula?.pct1 ?? 0,
+        pct2: itemWithCat.pct2 ?? formula?.pct2 ?? 0,
+        pctFloor: itemWithCat.pctFloor ?? formula?.pctFloor ?? 0,
+        currency: formula?.currency || CURRENCY_DEFAULT
+      };
+    }
+
+    // 3. Fallback to formula defaults
+    return {
+      pct1: formula?.pct1 ?? 0,
+      pct2: formula?.pct2 ?? 0,
+      pctFloor: formula?.pctFloor ?? 0,
+      currency: formula?.currency || CURRENCY_DEFAULT
+    };
+  };
+
+  // Suggestions filter for Category Name input:
+  // Shows matching categories based on input text; if no similar name matches, shows nothing
+  const matchingSuggestions = categoryName.trim()
+    ? allCategories.filter(cat => cat.toLowerCase().includes(categoryName.trim().toLowerCase()))
+    : [];
+
+  // When user clicks a category from the suggestions dropdown
+  const handleSelectCategory = (cat) => {
+    setCategoryName(cat);
+    setSelectedCategory(cat);
+    setShowCategorySuggestions(false);
+
+    // Put previous filled values of the category into the inputs
+    const prevVals = getCategoryValues(cat);
+    setCategoryPct1(prevVals.pct1);
+    setCategoryPct2(prevVals.pct2);
+    setCategoryPctFloor(prevVals.pctFloor);
+    if (prevVals.currency) {
+      setCurrencySymbol(prevVals.currency);
+    }
+  };
+
+  // When user saves changes for the category formula
+  const handleSaveCategoryFormula = async (e) => {
+    e.preventDefault();
+    const cat = categoryName.trim();
+    if (!cat) {
+      return toast('Please enter or select a category name.', 'error');
+    }
+
+    const p1 = Number(categoryPct1) || 0;
+    const p2 = Number(categoryPct2) || 0;
+    const pf = Number(categoryPctFloor) || 0;
+    const curr = currencySymbol.trim() || CURRENCY_DEFAULT;
+    const now = new Date().toISOString();
+
+    // 1. Save category formula mapping
+    const updatedFormulas = {
+      ...categoryFormulas,
+      [cat]: {
+        pct1: p1,
+        pct2: p2,
+        pctFloor: pf,
+        currency: curr,
+        updatedAt: now
+      }
+    };
+    await LocalDB.doc('config/categoryFormulas').set(updatedFormulas);
+    setCategoryFormulas(updatedFormulas);
+
+    // 2. Also keep default formula config updated
+    const updatedFormula = {
+      ...formula,
+      pct1: p1,
+      pct2: p2,
+      pctFloor: pf,
+      currency: curr,
+      updatedAt: now
+    };
+    await LocalDB.doc('config/formula').set(updatedFormula);
+    setFormula(updatedFormula);
+
+    // 3. Apply changes to all existing items belonging to this category
+    const matching = items.filter(it => (it.category || '').trim().toLowerCase() === cat.toLowerCase());
+    if (matching.length > 0) {
+      const writes = matching.map(async (it) => {
+        const updated = { ...it, pct1: p1, pct2: p2, pctFloor: pf };
+        const listPrice = listPriceOf(updated);
+        const q = computeQuote(listPrice, updated);
+
+        await LocalDB.collection('items').doc(it.id).update({ pct1: p1, pct2: p2, pctFloor: pf });
+        await LocalDB.collection('quotes').doc(it.id).set({
+          name: it.name,
+          category: it.category || '',
+          listPrice,
+          ...q,
+          currency: curr,
+          updatedAt: now
+        });
+        await recordHistory(LocalDB, it.id, {
+          category: it.category || '',
+          costPrice: Number(it.costPrice) || 0,
+          amountAdded: Number(it.amountAdded) || 0,
+          listPrice,
+          boundary1: q.boundary1,
+          boundary2: q.boundary2,
+          floorPrice: q.floorPrice,
+          pct1: p1,
+          pct2: p2,
+          pctFloor: pf,
+          currency: curr,
+          changedAt: now
+        });
+      });
+      await Promise.all(writes);
+      toast(`Category "${cat}" saved. Updated ${matching.length} item(s).`, 'success');
+    } else {
+      toast(`Category "${cat}" saved with End User: ${p1}%, OEM: ${p2}%, Dealer: ${pf}%.`, 'success');
+    }
+
+    setSelectedCategory(cat);
+  };
 
   // Category search filter in Add Item
-  const matchingAddCategories = allCategories.filter(cat => 
-    cat.toLowerCase().includes(addCategory.toLowerCase())
-  );
+  const matchingAddCategories = addCategory.trim()
+    ? allCategories.filter(cat => cat.toLowerCase().includes(addCategory.trim().toLowerCase()))
+    : allCategories;
 
   const handleAddItem = async (e) => {
     e.preventDefault();
@@ -171,9 +337,15 @@ export default function FormulaPage() {
     const category = String(addCategory || fd.get('category') || '').trim();
     const costPrice = Number(fd.get('cost'));
     const amountAdded = Number(fd.get('added'));
-    const pct1 = Number(fd.get('p1') || formula.pct1 || 0);
-    const pct2 = Number(fd.get('p2') || formula.pct2 || 0);
-    const pctFloor = Number(fd.get('pf') || formula.pctFloor || 0);
+    
+    // If % was left empty, prefill from category formula or global default
+    const catVals = category ? getCategoryValues(category) : formula;
+    const rawP1 = fd.get('p1');
+    const rawP2 = fd.get('p2');
+    const rawPf = fd.get('pf');
+    const pct1 = rawP1 !== '' && rawP1 !== null ? Number(rawP1) : (catVals?.pct1 ?? 0);
+    const pct2 = rawP2 !== '' && rawP2 !== null ? Number(rawP2) : (catVals?.pct2 ?? 0);
+    const pctFloor = rawPf !== '' && rawPf !== null ? Number(rawPf) : (catVals?.pctFloor ?? 0);
     
     const item = {
       name, category, costPrice, amountAdded,
@@ -231,83 +403,6 @@ export default function FormulaPage() {
     await LocalDB.collection('quotes').doc(id).delete();
     await LocalDB.collection('items').doc(id).delete();
     toast('Item deleted', 'success');
-  };
-
-  const saveDefaultFormula = async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const newFormula = {
-      pct1: Number(fd.get('pct1')),
-      pct2: Number(fd.get('pct2')),
-      pctFloor: Number(fd.get('pctFloor')),
-      currency: fd.get('currency') || CURRENCY_DEFAULT,
-      updatedAt: new Date().toISOString()
-    };
-    
-    await LocalDB.doc('config/formula').set(newFormula);
-    await recomputeAllQuotes(LocalDB, newFormula, items);
-    toast('Default saved. Items with their own % keep them; others updated.', 'success');
-  };
-
-  const applyDefaultToAll = async () => {
-    if (!window.confirm('Set every item’s End User / OEM / Dealer % to match the default? This overwrites custom percentages.')) return;
-    const p1 = formula.pct1 || 0, p2 = formula.pct2 || 0, pf = formula.pctFloor || 0;
-    
-    const writes = items.map(it => LocalDB.collection('items').doc(it.id).update({pct1: p1, pct2: p2, pctFloor: pf}));
-    await Promise.all(writes);
-    
-    const updatedItems = items.map(it => ({...it, pct1: p1, pct2: p2, pctFloor: pf}));
-    await recomputeAllQuotes(LocalDB, formula, updatedItems);
-    toast('Applied the default % to every item.', 'success');
-  };
-
-  const applyDefaultToCategory = async () => {
-    const targetCat = (selectedTargetCategory || targetCategorySearch).trim();
-    if (!targetCat) {
-      return toast('Please select or search a category first.', 'error');
-    }
-    const matching = items.filter(it => (it.category || '').toLowerCase() === targetCat.toLowerCase());
-    if (matching.length === 0) {
-      return toast(`No items found in category "${targetCat}".`, 'error');
-    }
-    if (!window.confirm(`Set End User (${formula.pct1 ?? 0}%), OEM (${formula.pct2 ?? 0}%), Dealer (${formula.pctFloor ?? 0}%) discounts for all ${matching.length} item(s) in category "${targetCat}"? This overwrites custom percentages.`)) return;
-
-    const p1 = formula.pct1 || 0, p2 = formula.pct2 || 0, pf = formula.pctFloor || 0;
-    const currency = formula?.currency || CURRENCY_DEFAULT;
-    const now = new Date().toISOString();
-
-    const writes = matching.map(async (it) => {
-      const updated = { ...it, pct1: p1, pct2: p2, pctFloor: pf };
-      const listPrice = listPriceOf(updated);
-      const q = computeQuote(listPrice, updated);
-      
-      await LocalDB.collection('items').doc(it.id).update({ pct1: p1, pct2: p2, pctFloor: pf });
-      await LocalDB.collection('quotes').doc(it.id).set({
-        name: it.name,
-        category: it.category || '',
-        listPrice,
-        ...q,
-        currency,
-        updatedAt: now
-      });
-      await recordHistory(LocalDB, it.id, {
-        category: it.category || '',
-        costPrice: Number(it.costPrice) || 0,
-        amountAdded: Number(it.amountAdded) || 0,
-        listPrice,
-        boundary1: q.boundary1,
-        boundary2: q.boundary2,
-        floorPrice: q.floorPrice,
-        pct1: p1,
-        pct2: p2,
-        pctFloor: pf,
-        currency,
-        changedAt: now
-      });
-    });
-
-    await Promise.all(writes);
-    toast(`Applied default formula to ${matching.length} item(s) in category "${targetCat}".`, 'success');
   };
 
   const handleBulkImport = async () => {
@@ -420,98 +515,125 @@ export default function FormulaPage() {
         <div><h2>Formula & Items</h2><p className="page-sub">Each item can run its own discount %. Only you see this page.</p></div>
       </div>
       
-      {/* Default Formula Section */}
+      {/* Category Formula Section */}
       <div className="card">
         <div className="card-head">
           <h3>Default Formula</h3>
-          <p>End User / OEM / Dealer Price = List Price &times; (1 &minus; percentage). Used to prefill new items.</p>
+          <p>End User / OEM / Dealer Price = List Price &times; (1 &minus; percentage). Set category formula to update or prefill items.</p>
         </div>
         <div className="card-pad">
-          <form onSubmit={saveDefaultFormula}>
+          <form onSubmit={handleSaveCategoryFormula}>
             <div className="pct-grid">
-              <div className="field"><label>End User Price discount %</label><input name="pct1" type="number" step="0.1" min="0" max="100" defaultValue={formula?.pct1 ?? 0} /></div>
-              <div className="field"><label>OEM Price discount %</label><input name="pct2" type="number" step="0.1" min="0" max="100" defaultValue={formula?.pct2 ?? 0} /></div>
-              <div className="field"><label>Dealer Price discount %</label><input name="pctFloor" type="number" step="0.1" min="0" max="100" defaultValue={formula?.pctFloor ?? 0} /></div>
+              <div className="field">
+                <label>End User Price discount %</label>
+                <input 
+                  name="pct1" 
+                  type="number" 
+                  step="0.1" 
+                  min="0" 
+                  max="100" 
+                  value={categoryPct1} 
+                  onChange={e => setCategoryPct1(e.target.value)} 
+                />
+              </div>
+              <div className="field">
+                <label>OEM Price discount %</label>
+                <input 
+                  name="pct2" 
+                  type="number" 
+                  step="0.1" 
+                  min="0" 
+                  max="100" 
+                  value={categoryPct2} 
+                  onChange={e => setCategoryPct2(e.target.value)} 
+                />
+              </div>
+              <div className="field">
+                <label>Dealer Price discount %</label>
+                <input 
+                  name="pctFloor" 
+                  type="number" 
+                  step="0.1" 
+                  min="0" 
+                  max="100" 
+                  value={categoryPctFloor} 
+                  onChange={e => setCategoryPctFloor(e.target.value)} 
+                />
+              </div>
             </div>
 
-            {/* Currency Symbol and Category Selection Options */}
-            <div className="row-2" style={{ maxWidth: '520px', alignItems: 'flex-start', marginTop: '4px' }}>
-              <div className="field" style={{ margin: 0 }}>
+            {/* Currency Symbol and Category Name Input with Suggestions */}
+            <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start', marginTop: '4px', flexWrap: 'wrap' }}>
+              <div className="field" style={{ margin: 0, width: '140px' }}>
                 <label>Currency symbol</label>
-                <input name="currency" maxLength="3" defaultValue={formula?.currency || CURRENCY_DEFAULT} />
+                <input 
+                  name="currency" 
+                  maxLength="3" 
+                  value={currencySymbol} 
+                  onChange={e => setCurrencySymbol(e.target.value)} 
+                />
               </div>
-              <div className="field" style={{ margin: 0, position: 'relative' }} ref={formulaCategoryRef}>
-                <label>Category (Apply Default Formula)</label>
+              <div className="field" style={{ margin: 0, position: 'relative', flex: 1, minWidth: '240px' }} ref={categoryInputRef}>
+                <label>Category Name</label>
                 <div className="category-search-wrap">
                   <input 
                     type="text"
                     className="category-search-input"
-                    placeholder="Search / select category..."
-                    value={targetCategorySearch}
+                    placeholder="Enter category name..."
+                    value={categoryName}
                     onChange={e => {
-                      setTargetCategorySearch(e.target.value);
-                      setSelectedTargetCategory(e.target.value);
-                      setShowFormulaCategoryDropdown(true);
+                      const val = e.target.value;
+                      setCategoryName(val);
+                      setSelectedCategory('');
+                      setShowCategorySuggestions(Boolean(val.trim()));
                     }}
-                    onFocus={() => setShowFormulaCategoryDropdown(true)}
+                    onFocus={() => {
+                      if (categoryName.trim()) setShowCategorySuggestions(true);
+                    }}
                     autoComplete="off"
                   />
-                  {targetCategorySearch && (
+                  {categoryName && (
                     <button
                       type="button"
                       className="category-clear-btn"
                       onClick={() => {
-                        setTargetCategorySearch('');
-                        setSelectedTargetCategory('');
-                        setShowFormulaCategoryDropdown(false);
+                        setCategoryName('');
+                        setSelectedCategory('');
+                        setShowCategorySuggestions(false);
+                        setCategoryPct1(formula?.pct1 ?? 0);
+                        setCategoryPct2(formula?.pct2 ?? 0);
+                        setCategoryPctFloor(formula?.pctFloor ?? 0);
                       }}
                       title="Clear category"
                     >
                       &times;
                     </button>
                   )}
-                  {showFormulaCategoryDropdown && (
+                  {/* Suggestions dropdown: only shown if there are matching similar names */}
+                  {showCategorySuggestions && matchingSuggestions.length > 0 && (
                     <div className="category-dropdown">
-                      {matchingTargetCategories.length > 0 ? (
-                        matchingTargetCategories.map(cat => (
-                          <div 
-                            key={cat}
-                            className={`category-dropdown-item ${selectedTargetCategory.toLowerCase() === cat.toLowerCase() ? 'selected' : ''}`}
-                            onMouseDown={() => {
-                              setSelectedTargetCategory(cat);
-                              setTargetCategorySearch(cat);
-                              setShowFormulaCategoryDropdown(false);
-                            }}
-                          >
-                            <span>{cat}</span>
-                            <span className="badge badge-team" style={{ fontSize: '10px' }}>
-                              {categoryCounts[cat.toLowerCase()] || 0} item{(categoryCounts[cat.toLowerCase()] || 0) === 1 ? '' : 's'}
-                            </span>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="category-dropdown-empty">
-                          {allCategories.length === 0 ? 'No categories found in items yet' : 'No matching categories'}
+                      {matchingSuggestions.map(cat => (
+                        <div 
+                          key={cat}
+                          className={`category-dropdown-item ${selectedCategory.toLowerCase() === cat.toLowerCase() ? 'selected' : ''}`}
+                          onMouseDown={() => handleSelectCategory(cat)}
+                        >
+                          <span>{cat}</span>
+                          <span className="badge badge-team" style={{ fontSize: '10px' }}>
+                            {categoryCounts[cat.toLowerCase()] || 0} item{(categoryCounts[cat.toLowerCase()] || 0) === 1 ? '' : 's'}
+                          </span>
                         </div>
-                      )}
+                      ))}
                     </div>
                   )}
                 </div>
               </div>
             </div>
 
-            <div className="inline-actions" style={{ justifyContent: 'flex-start', gap: '10px', marginTop: '16px', flexWrap: 'wrap' }}>
-              <button className="btn" type="submit">Save default</button>
-              <button className="btn btn-ghost" type="button" onClick={applyDefaultToAll}>Apply default to all items</button>
-              <button 
-                className="btn btn-ghost" 
-                type="button" 
-                onClick={applyDefaultToCategory}
-                title={selectedTargetCategory ? `Apply default formula to all items in "${selectedTargetCategory}"` : 'Select a category to apply default'}
-              >
-                {selectedTargetCategory 
-                  ? `Apply default to "${selectedTargetCategory}" (${categoryCounts[selectedTargetCategory.toLowerCase()] || 0})` 
-                  : 'Apply default to category'}
+            {/* Single Action Button to save changes */}
+            <div className="inline-actions" style={{ justifyContent: 'flex-start', marginTop: '16px' }}>
+              <button className="btn" type="submit">
+                {selectedCategory ? 'Save changes' : 'Save Category'}
               </button>
             </div>
             {formula?.updatedAt && <p className="small-note">Last saved {new Date(formula.updatedAt).toLocaleString()}</p>}
@@ -557,29 +679,23 @@ export default function FormulaPage() {
                     &times;
                   </button>
                 )}
-                {showAddCategoryDropdown && (
+                {showAddCategoryDropdown && matchingAddCategories.length > 0 && (
                   <div className="category-dropdown">
-                    {matchingAddCategories.length > 0 ? (
-                      matchingAddCategories.map(cat => (
-                        <div 
-                          key={cat}
-                          className={`category-dropdown-item ${addCategory.toLowerCase() === cat.toLowerCase() ? 'selected' : ''}`}
-                          onMouseDown={() => {
-                            setAddCategory(cat);
-                            setShowAddCategoryDropdown(false);
-                          }}
-                        >
-                          <span>{cat}</span>
-                          <span className="badge badge-team" style={{ fontSize: '10px' }}>
-                            {categoryCounts[cat.toLowerCase()] || 0}
-                          </span>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="category-dropdown-empty">
-                        {addCategory.trim() ? `New category: "${addCategory.trim()}"` : 'No categories yet'}
+                    {matchingAddCategories.map(cat => (
+                      <div 
+                        key={cat}
+                        className={`category-dropdown-item ${addCategory.toLowerCase() === cat.toLowerCase() ? 'selected' : ''}`}
+                        onMouseDown={() => {
+                          setAddCategory(cat);
+                          setShowAddCategoryDropdown(false);
+                        }}
+                      >
+                        <span>{cat}</span>
+                        <span className="badge badge-team" style={{ fontSize: '10px' }}>
+                          {categoryCounts[cat.toLowerCase()] || 0}
+                        </span>
                       </div>
-                    )}
+                    ))}
                   </div>
                 )}
               </div>
@@ -590,9 +706,39 @@ export default function FormulaPage() {
             <button className="btn" type="submit">Add item</button>
             
             <div className="pct-grid" style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
-              <div className="field" style={{ margin: 0 }}><label>End User %</label><input name="p1" type="number" step="0.1" min="0" max="100" placeholder={`Default: ${formula?.pct1 ?? 0}`} /></div>
-              <div className="field" style={{ margin: 0 }}><label>OEM %</label><input name="p2" type="number" step="0.1" min="0" max="100" placeholder={`Default: ${formula?.pct2 ?? 0}`} /></div>
-              <div className="field" style={{ margin: 0 }}><label>Dealer %</label><input name="pf" type="number" step="0.1" min="0" max="100" placeholder={`Default: ${formula?.pctFloor ?? 0}`} /></div>
+              <div className="field" style={{ margin: 0 }}>
+                <label>End User %</label>
+                <input 
+                  name="p1" 
+                  type="number" 
+                  step="0.1" 
+                  min="0" 
+                  max="100" 
+                  placeholder={`Default: ${(addCategory ? getCategoryValues(addCategory).pct1 : formula?.pct1) ?? 0}`} 
+                />
+              </div>
+              <div className="field" style={{ margin: 0 }}>
+                <label>OEM %</label>
+                <input 
+                  name="p2" 
+                  type="number" 
+                  step="0.1" 
+                  min="0" 
+                  max="100" 
+                  placeholder={`Default: ${(addCategory ? getCategoryValues(addCategory).pct2 : formula?.pct2) ?? 0}`} 
+                />
+              </div>
+              <div className="field" style={{ margin: 0 }}>
+                <label>Dealer %</label>
+                <input 
+                  name="pf" 
+                  type="number" 
+                  step="0.1" 
+                  min="0" 
+                  max="100" 
+                  placeholder={`Default: ${(addCategory ? getCategoryValues(addCategory).pctFloor : formula?.pctFloor) ?? 0}`} 
+                />
+              </div>
             </div>
           </form>
 
