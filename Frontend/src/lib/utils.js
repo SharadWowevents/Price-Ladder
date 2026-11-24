@@ -54,6 +54,7 @@ export const recomputeAllQuotes = async (db, formula, items) => {
     
     writes.push(db.collection('quotes').doc(it.id).set({
       name: it.name,
+      category: it.category || '',
       listPrice,
       boundary1: q.boundary1,
       boundary2: q.boundary2,
@@ -63,6 +64,7 @@ export const recomputeAllQuotes = async (db, formula, items) => {
     }));
     
     writes.push(recordHistory(db, it.id, {
+      category: it.category || '',
       costPrice: Number(it.costPrice) || 0,
       amountAdded: Number(it.amountAdded) || 0,
       listPrice,
@@ -83,6 +85,7 @@ export const parseBulkRows = (text, existingItems) => {
     const cols = line.includes('\t') ? line.split('\t') : line.split(',');
     const name = (cols[0] || '').trim();
     const priceRaw = (cols[1] || '').trim();
+    const category = (cols[2] || '').trim();
     const priceNum = parseFloat(priceRaw.replace(/[^0-9.\-]/g, ''));
     const looksLikeHeader = idx === 0 && isNaN(priceNum) && /^(item|name|product)/i.test(name);
     const key = name.toLowerCase();
@@ -91,6 +94,7 @@ export const parseBulkRows = (text, existingItems) => {
     
     return {
       name,
+      category,
       costPrice: isNaN(priceNum) ? 0 : priceNum,
       isHeader: looksLikeHeader,
       valid: !looksLikeHeader && name.length > 0,

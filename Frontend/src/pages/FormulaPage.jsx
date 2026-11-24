@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { LocalDB } from '../lib/db';
 import { fmtMoney, listPriceOf, effectivePct, computeQuote, slugId, recordHistory, recomputeAllQuotes, parseBulkRows, CURRENCY_DEFAULT } from '../lib/utils';
 import { GpLine, useToast } from '../components/UI';
 
-const EditableRow = ({ item, formula, onSave, onDelete }) => {
+const EditableRow = ({ item, formula, onSave, onDelete, categories }) => {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(item);
 
@@ -18,6 +18,13 @@ const EditableRow = ({ item, formula, onSave, onDelete }) => {
   if (!editing) return (
     <tr>
       <td className="item-name">{item.name}</td>
+      <td>
+        {item.category ? (
+          <span className="badge badge-team">{item.category}</span>
+        ) : (
+          <span style={{ color: 'var(--ink-muted)' }}>—</span>
+        )}
+      </td>
       <td className="num-col">{Number(item.costPrice).toFixed(2)}</td>
       <td className="num-col">{Number(item.amountAdded).toFixed(2)}</td>
       <td className="num-col">{Number(pct.pct1).toFixed(1)}</td>
@@ -40,6 +47,7 @@ const EditableRow = ({ item, formula, onSave, onDelete }) => {
     const updated = {
       ...form,
       name: String(form.name || '').trim(),
+      category: String(form.category || '').trim(),
       costPrice: Number(form.costPrice),
       amountAdded: Number(form.amountAdded),
       pct1: Number(form.pct1),
@@ -52,6 +60,15 @@ const EditableRow = ({ item, formula, onSave, onDelete }) => {
   return (
     <tr className="editing-cell">
       <td><input value={form.name} onChange={e => setForm({...form, name: e.target.value})} /></td>
+      <td>
+        <input 
+          value={form.category || ''} 
+          onChange={e => setForm({...form, category: e.target.value})} 
+          placeholder="Category"
+          list="item-categories-list"
+          style={{ width: '100%', minWidth: '90px' }}
+        />
+      </td>
       <td><input type="number" value={form.costPrice} onChange={e => setForm({...form, costPrice: e.target.value})} style={{width:'60px'}}/></td>
       <td><input type="number" value={form.amountAdded} onChange={e => setForm({...form, amountAdded: e.target.value})} style={{width:'60px'}}/></td>
       <td><input type="number" value={form.pct1} onChange={e => setForm({...form, pct1: e.target.value})} style={{width:'60px'}}/></td>
@@ -72,7 +89,23 @@ export default function FormulaPage() {
   const [formula, setFormula] = useState({ pct1: 0, pct2: 0, pctFloor: 0, currency: '₹' });
   const [items, setItems] = useState([]);
   const [search, setSearch] = useState('');
+  const [tableCategoryFilter, setTableCategoryFilter] = useState('__all__');
   
+  // Default formula category search state
+  const [targetCategorySearch, setTargetCategorySearch] = useState('');
+  const [selectedTargetCategory, setSelectedTargetCategory] = useState('');
+  const [showFormulaCategoryDropdown, setShowFormulaCategoryDropdown] = useState(false);
+  const formulaCategoryRef = useRef(null);
+
+  // Add Item category search state
+  const [addCategory, setAddCategory] = useState('');
+  const [showAddCategoryDropdown, setShowAddCategoryDropdown] = useState(false);
+  const addCategoryRef = useRef(null);
+
+  // Pagination state (up to 50 items max)
+  const [pageSize, setPageSize] = useState(10);
+  const [currentPage, setCurrentPage] = useState(1);
+
   // Bulk import state
   const [bulkText, setBulkText] = useState('');
   const [bulkRows, setBulkRows] = useState([]);
@@ -95,11 +128,47 @@ export default function FormulaPage() {
     setBulkRows(parseBulkRows(bulkText, items));
   }, [bulkText, items]);
 
+  // Click outside listener for custom dropdowns
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (formulaCategoryRef.current && !formulaCategoryRef.current.contains(e.target)) {
+        setShowFormulaCategoryDropdown(false);
+      }
+      if (addCategoryRef.current && !addCategoryRef.current.contains(e.target)) {
+        setShowAddCategoryDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Compute distinct categories and item count per category
+  const allCategories = Array.from(
+    new Set(items.map(it => (it.category || '').trim()).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+  const categoryCounts = items.reduce((acc, it) => {
+    const cat = (it.category || '').trim().toLowerCase();
+    if (cat) acc[cat] = (acc[cat] || 0) + 1;
+    return acc;
+  }, {});
+
+  // Category search filter in Default Formula
+  const matchingTargetCategories = allCategories.filter(cat => 
+    cat.toLowerCase().includes(targetCategorySearch.toLowerCase())
+  );
+
+  // Category search filter in Add Item
+  const matchingAddCategories = allCategories.filter(cat => 
+    cat.toLowerCase().includes(addCategory.toLowerCase())
+  );
+
   const handleAddItem = async (e) => {
     e.preventDefault();
     const formEl = e.target;
     const fd = new FormData(formEl);
     const name = fd.get('name');
+    const category = String(addCategory || fd.get('category') || '').trim();
     const costPrice = Number(fd.get('cost'));
     const amountAdded = Number(fd.get('added'));
     const pct1 = Number(fd.get('p1') || formula.pct1 || 0);
@@ -107,7 +176,7 @@ export default function FormulaPage() {
     const pctFloor = Number(fd.get('pf') || formula.pctFloor || 0);
     
     const item = {
-      name, costPrice, amountAdded,
+      name, category, costPrice, amountAdded,
       pct1, pct2, pctFloor
     };
     const id = slugId(name);
@@ -117,8 +186,9 @@ export default function FormulaPage() {
     const q = computeQuote(listPrice, item);
     const currency = formula?.currency || CURRENCY_DEFAULT;
     
-    await LocalDB.collection('quotes').doc(id).set({ name, listPrice, ...q, currency, updatedAt: now });
+    await LocalDB.collection('quotes').doc(id).set({ name, category, listPrice, ...q, currency, updatedAt: now });
     await recordHistory(LocalDB, id, {
+      category,
       costPrice, amountAdded, listPrice,
       boundary1: q.boundary1, boundary2: q.boundary2, floorPrice: q.floorPrice,
       pct1, pct2, pctFloor, currency, changedAt: now
@@ -126,6 +196,8 @@ export default function FormulaPage() {
     await LocalDB.collection('items').doc(id).set({ ...item, createdAt: now });
     
     formEl.reset();
+    setAddCategory('');
+    setShowAddCategoryDropdown(false);
     toast('Item added', 'success');
   };
 
@@ -135,8 +207,16 @@ export default function FormulaPage() {
     const currency = formula?.currency || CURRENCY_DEFAULT;
     const now = new Date().toISOString();
     
-    await LocalDB.collection('quotes').doc(updated.id).set({ name: updated.name, listPrice, ...q, currency, updatedAt: now });
+    await LocalDB.collection('quotes').doc(updated.id).set({
+      name: updated.name,
+      category: updated.category || '',
+      listPrice,
+      ...q,
+      currency,
+      updatedAt: now
+    });
     await recordHistory(LocalDB, updated.id, {
+      category: updated.category || '',
       costPrice: Number(updated.costPrice), amountAdded: Number(updated.amountAdded), listPrice,
       boundary1: q.boundary1, boundary2: q.boundary2, floorPrice: q.floorPrice,
       pct1: updated.pct1, pct2: updated.pct2, pctFloor: updated.pctFloor, currency, changedAt: now
@@ -181,6 +261,55 @@ export default function FormulaPage() {
     toast('Applied the default % to every item.', 'success');
   };
 
+  const applyDefaultToCategory = async () => {
+    const targetCat = (selectedTargetCategory || targetCategorySearch).trim();
+    if (!targetCat) {
+      return toast('Please select or search a category first.', 'error');
+    }
+    const matching = items.filter(it => (it.category || '').toLowerCase() === targetCat.toLowerCase());
+    if (matching.length === 0) {
+      return toast(`No items found in category "${targetCat}".`, 'error');
+    }
+    if (!window.confirm(`Set End User (${formula.pct1 ?? 0}%), OEM (${formula.pct2 ?? 0}%), Dealer (${formula.pctFloor ?? 0}%) discounts for all ${matching.length} item(s) in category "${targetCat}"? This overwrites custom percentages.`)) return;
+
+    const p1 = formula.pct1 || 0, p2 = formula.pct2 || 0, pf = formula.pctFloor || 0;
+    const currency = formula?.currency || CURRENCY_DEFAULT;
+    const now = new Date().toISOString();
+
+    const writes = matching.map(async (it) => {
+      const updated = { ...it, pct1: p1, pct2: p2, pctFloor: pf };
+      const listPrice = listPriceOf(updated);
+      const q = computeQuote(listPrice, updated);
+      
+      await LocalDB.collection('items').doc(it.id).update({ pct1: p1, pct2: p2, pctFloor: pf });
+      await LocalDB.collection('quotes').doc(it.id).set({
+        name: it.name,
+        category: it.category || '',
+        listPrice,
+        ...q,
+        currency,
+        updatedAt: now
+      });
+      await recordHistory(LocalDB, it.id, {
+        category: it.category || '',
+        costPrice: Number(it.costPrice) || 0,
+        amountAdded: Number(it.amountAdded) || 0,
+        listPrice,
+        boundary1: q.boundary1,
+        boundary2: q.boundary2,
+        floorPrice: q.floorPrice,
+        pct1: p1,
+        pct2: p2,
+        pctFloor: pf,
+        currency,
+        changedAt: now
+      });
+    });
+
+    await Promise.all(writes);
+    toast(`Applied default formula to ${matching.length} item(s) in category "${targetCat}".`, 'success');
+  };
+
   const handleBulkImport = async () => {
     const importable = bulkRows.filter(r => r.valid && !r.duplicate);
     if (!importable.length) return;
@@ -192,14 +321,15 @@ export default function FormulaPage() {
     for (const r of importable) {
       try {
         const id = slugId(r.name);
-        const item = { name: r.name, costPrice: r.costPrice, amountAdded: 0, pct1: p1, pct2: p2, pctFloor: pf };
+        const item = { name: r.name, category: r.category || '', costPrice: r.costPrice, amountAdded: 0, pct1: p1, pct2: p2, pctFloor: pf };
         const now = new Date().toISOString();
         
         await LocalDB.collection('items').doc(id).set({ ...item, createdAt: now });
         
         const q = computeQuote(r.costPrice, item);
-        await LocalDB.collection('quotes').doc(id).set({ name: r.name, listPrice: r.costPrice, ...q, currency, updatedAt: now });
+        await LocalDB.collection('quotes').doc(id).set({ name: r.name, category: r.category || '', listPrice: r.costPrice, ...q, currency, updatedAt: now });
         await recordHistory(LocalDB, id, {
+          category: r.category || '',
           costPrice: r.costPrice, amountAdded: 0, listPrice: r.costPrice,
           boundary1: q.boundary1, boundary2: q.boundary2, floorPrice: q.floorPrice,
           pct1: p1, pct2: p2, pctFloor: pf, currency, changedAt: now
@@ -246,7 +376,42 @@ export default function FormulaPage() {
     }
   };
 
-  const filteredItems = items.filter(it => it.name.toLowerCase().includes(search.toLowerCase()));
+  // Filter items by search query and category filter
+  const filteredItems = items.filter(it => {
+    const q = search.trim().toLowerCase();
+    const matchesSearch = !q || 
+      it.name.toLowerCase().includes(q) || 
+      (it.category && it.category.toLowerCase().includes(q));
+    const matchesCategory = tableCategoryFilter === '__all__' || 
+      (it.category || '').toLowerCase() === tableCategoryFilter.toLowerCase();
+    return matchesSearch && matchesCategory;
+  });
+
+  // Pagination calculations (max items up to 50 in list)
+  const totalItems = filteredItems.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+  const startIdx = (safeCurrentPage - 1) * pageSize;
+  const endIdx = Math.min(startIdx + pageSize, totalItems);
+  const paginatedItems = filteredItems.slice(startIdx, endIdx);
+
+  // Pagination page numbers generator with smart ellipsis
+  const getPageNumbers = () => {
+    if (totalPages <= 7) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+    const pages = [1];
+    if (safeCurrentPage > 3) pages.push('ellipsis-1');
+    const start = Math.max(2, safeCurrentPage - 1);
+    const end = Math.min(totalPages - 1, safeCurrentPage + 1);
+    for (let i = start; i <= end; i++) {
+      pages.push(i);
+    }
+    if (safeCurrentPage < totalPages - 2) pages.push('ellipsis-2');
+    pages.push(totalPages);
+    return pages;
+  };
+
   const importableCount = bulkRows.filter(r => r.valid && !r.duplicate).length;
 
   return (
@@ -268,10 +433,86 @@ export default function FormulaPage() {
               <div className="field"><label>OEM Price discount %</label><input name="pct2" type="number" step="0.1" min="0" max="100" defaultValue={formula?.pct2 ?? 0} /></div>
               <div className="field"><label>Dealer Price discount %</label><input name="pctFloor" type="number" step="0.1" min="0" max="100" defaultValue={formula?.pctFloor ?? 0} /></div>
             </div>
-            <div className="field" style={{maxWidth: '160px'}}><label>Currency symbol</label><input name="currency" maxLength="3" defaultValue={formula?.currency || CURRENCY_DEFAULT} /></div>
-            <div className="inline-actions" style={{justifyContent: 'flex-start', gap: '10px'}}>
+
+            {/* Currency Symbol and Category Selection Options */}
+            <div className="row-2" style={{ maxWidth: '520px', alignItems: 'flex-start', marginTop: '4px' }}>
+              <div className="field" style={{ margin: 0 }}>
+                <label>Currency symbol</label>
+                <input name="currency" maxLength="3" defaultValue={formula?.currency || CURRENCY_DEFAULT} />
+              </div>
+              <div className="field" style={{ margin: 0, position: 'relative' }} ref={formulaCategoryRef}>
+                <label>Category (Apply Default Formula)</label>
+                <div className="category-search-wrap">
+                  <input 
+                    type="text"
+                    className="category-search-input"
+                    placeholder="Search / select category..."
+                    value={targetCategorySearch}
+                    onChange={e => {
+                      setTargetCategorySearch(e.target.value);
+                      setSelectedTargetCategory(e.target.value);
+                      setShowFormulaCategoryDropdown(true);
+                    }}
+                    onFocus={() => setShowFormulaCategoryDropdown(true)}
+                    autoComplete="off"
+                  />
+                  {targetCategorySearch && (
+                    <button
+                      type="button"
+                      className="category-clear-btn"
+                      onClick={() => {
+                        setTargetCategorySearch('');
+                        setSelectedTargetCategory('');
+                        setShowFormulaCategoryDropdown(false);
+                      }}
+                      title="Clear category"
+                    >
+                      &times;
+                    </button>
+                  )}
+                  {showFormulaCategoryDropdown && (
+                    <div className="category-dropdown">
+                      {matchingTargetCategories.length > 0 ? (
+                        matchingTargetCategories.map(cat => (
+                          <div 
+                            key={cat}
+                            className={`category-dropdown-item ${selectedTargetCategory.toLowerCase() === cat.toLowerCase() ? 'selected' : ''}`}
+                            onMouseDown={() => {
+                              setSelectedTargetCategory(cat);
+                              setTargetCategorySearch(cat);
+                              setShowFormulaCategoryDropdown(false);
+                            }}
+                          >
+                            <span>{cat}</span>
+                            <span className="badge badge-team" style={{ fontSize: '10px' }}>
+                              {categoryCounts[cat.toLowerCase()] || 0} item{(categoryCounts[cat.toLowerCase()] || 0) === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="category-dropdown-empty">
+                          {allCategories.length === 0 ? 'No categories found in items yet' : 'No matching categories'}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="inline-actions" style={{ justifyContent: 'flex-start', gap: '10px', marginTop: '16px', flexWrap: 'wrap' }}>
               <button className="btn" type="submit">Save default</button>
               <button className="btn btn-ghost" type="button" onClick={applyDefaultToAll}>Apply default to all items</button>
+              <button 
+                className="btn btn-ghost" 
+                type="button" 
+                onClick={applyDefaultToCategory}
+                title={selectedTargetCategory ? `Apply default formula to all items in "${selectedTargetCategory}"` : 'Select a category to apply default'}
+              >
+                {selectedTargetCategory 
+                  ? `Apply default to "${selectedTargetCategory}" (${categoryCounts[selectedTargetCategory.toLowerCase()] || 0})` 
+                  : 'Apply default to category'}
+              </button>
             </div>
             {formula?.updatedAt && <p className="small-note">Last saved {new Date(formula.updatedAt).toLocaleString()}</p>}
           </form>
@@ -285,48 +526,236 @@ export default function FormulaPage() {
           <p>Cost price, amount added, and GP stay private to admins &mdash; your team only ever sees the End User, OEM, and Dealer prices.</p>
         </div>
         <div className="card-pad">
-          <form className="form-grid-4" onSubmit={handleAddItem}>
-            <div className="field" style={{margin:0}}><label>Name</label><input name="name" required /></div>
-            <div className="field" style={{margin:0}}><label>Cost price</label><input name="cost" type="number" step="0.01" min="0" required /></div>
-            <div className="field" style={{margin:0}}><label>Amount to add</label><input name="added" type="number" step="0.01" min="0" required /></div>
+          {/* Add Item Form with Category Selector */}
+          <form className="form-grid-5" onSubmit={handleAddItem}>
+            <div className="field" style={{ margin: 0 }}><label>Name</label><input name="name" required /></div>
+            
+            <div className="field" style={{ margin: 0, position: 'relative' }} ref={addCategoryRef}>
+              <label>Category</label>
+              <div className="category-search-wrap">
+                <input 
+                  name="category"
+                  value={addCategory}
+                  onChange={e => {
+                    setAddCategory(e.target.value);
+                    setShowAddCategoryDropdown(true);
+                  }}
+                  onFocus={() => setShowAddCategoryDropdown(true)}
+                  placeholder="Select or enter category..."
+                  autoComplete="off"
+                />
+                {addCategory && (
+                  <button
+                    type="button"
+                    className="category-clear-btn"
+                    onClick={() => {
+                      setAddCategory('');
+                      setShowAddCategoryDropdown(false);
+                    }}
+                    title="Clear"
+                  >
+                    &times;
+                  </button>
+                )}
+                {showAddCategoryDropdown && (
+                  <div className="category-dropdown">
+                    {matchingAddCategories.length > 0 ? (
+                      matchingAddCategories.map(cat => (
+                        <div 
+                          key={cat}
+                          className={`category-dropdown-item ${addCategory.toLowerCase() === cat.toLowerCase() ? 'selected' : ''}`}
+                          onMouseDown={() => {
+                            setAddCategory(cat);
+                            setShowAddCategoryDropdown(false);
+                          }}
+                        >
+                          <span>{cat}</span>
+                          <span className="badge badge-team" style={{ fontSize: '10px' }}>
+                            {categoryCounts[cat.toLowerCase()] || 0}
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="category-dropdown-empty">
+                        {addCategory.trim() ? `New category: "${addCategory.trim()}"` : 'No categories yet'}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="field" style={{ margin: 0 }}><label>Cost price</label><input name="cost" type="number" step="0.01" min="0" required /></div>
+            <div className="field" style={{ margin: 0 }}><label>Amount to add</label><input name="added" type="number" step="0.01" min="0" required /></div>
             <button className="btn" type="submit">Add item</button>
             
-            <div className="pct-grid" style={{gridColumn: '1 / -1', marginTop: '10px'}}>
-              <div className="field" style={{margin:0}}><label>End User %</label><input name="p1" type="number" step="0.1" min="0" max="100" placeholder={`Default: ${formula?.pct1 ?? 0}`} /></div>
-              <div className="field" style={{margin:0}}><label>OEM %</label><input name="p2" type="number" step="0.1" min="0" max="100" placeholder={`Default: ${formula?.pct2 ?? 0}`} /></div>
-              <div className="field" style={{margin:0}}><label>Dealer %</label><input name="pf" type="number" step="0.1" min="0" max="100" placeholder={`Default: ${formula?.pctFloor ?? 0}`} /></div>
+            <div className="pct-grid" style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
+              <div className="field" style={{ margin: 0 }}><label>End User %</label><input name="p1" type="number" step="0.1" min="0" max="100" placeholder={`Default: ${formula?.pct1 ?? 0}`} /></div>
+              <div className="field" style={{ margin: 0 }}><label>OEM %</label><input name="p2" type="number" step="0.1" min="0" max="100" placeholder={`Default: ${formula?.pct2 ?? 0}`} /></div>
+              <div className="field" style={{ margin: 0 }}><label>Dealer %</label><input name="pf" type="number" step="0.1" min="0" max="100" placeholder={`Default: ${formula?.pctFloor ?? 0}`} /></div>
             </div>
           </form>
-          <div className="search-bar" style={{ marginTop: '18px', maxWidth: '100%', marginBottom: 0 }}>
-            <span className="search-icon">&#128269;</span>
-            <input placeholder="Search item or product..." onChange={e => setSearch(e.target.value)} />
+
+          {/* Search bar & Category filter */}
+          <div style={{ display: 'flex', gap: '10px', marginTop: '18px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div className="search-bar" style={{ margin: 0, flex: 1, minWidth: '220px' }}>
+              <span className="search-icon">&#128269;</span>
+              <input 
+                placeholder="Search item or category..." 
+                value={search}
+                onChange={e => { setSearch(e.target.value); setCurrentPage(1); }} 
+              />
+            </div>
+            <div style={{ minWidth: '180px' }}>
+              <select 
+                value={tableCategoryFilter} 
+                onChange={e => { setTableCategoryFilter(e.target.value); setCurrentPage(1); }}
+                style={{
+                  padding: '9px 11px',
+                  border: '1px solid var(--border)',
+                  borderRadius: '8px',
+                  background: 'var(--surface-2)',
+                  color: 'var(--ink)',
+                  width: '100%',
+                  outline: 'none'
+                }}
+              >
+                <option value="__all__">All categories ({allCategories.length})</option>
+                {allCategories.map(c => (
+                  <option key={c} value={c}>{c} ({categoryCounts[c.toLowerCase()] || 0})</option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
+
+        {/* Items Table with Category Column */}
         <div className="table-scroll">
           <table>
             <thead><tr>
-              <th>Item</th><th className="num-col">Cost Price</th><th className="num-col">Amount Added</th>
-              <th className="num-col">End User %</th><th className="num-col">OEM %</th><th className="num-col">Dealer %</th>
-              <th className="num-col">List Price</th><th className="num-col">End User Price</th><th className="num-col">OEM Price</th><th className="num-col">Dealer Price</th><th></th>
+              <th>Item</th>
+              <th>Category</th>
+              <th className="num-col">Cost Price</th>
+              <th className="num-col">Amount Added</th>
+              <th className="num-col">End User %</th>
+              <th className="num-col">OEM %</th>
+              <th className="num-col">Dealer %</th>
+              <th className="num-col">List Price</th>
+              <th className="num-col">End User Price</th>
+              <th className="num-col">OEM Price</th>
+              <th className="num-col">Dealer Price</th>
+              <th></th>
             </tr></thead>
             <tbody>
               {filteredItems.length === 0 ? (
-                <tr className="empty-row"><td colSpan="11">No items match.</td></tr>
+                <tr className="empty-row"><td colSpan="12">No items match.</td></tr>
               ) : (
-                filteredItems.map(it => (
-                  <EditableRow key={it.id} item={it} formula={formula} onSave={updateItem} onDelete={deleteItem} />
+                paginatedItems.map(it => (
+                  <EditableRow 
+                    key={it.id} 
+                    item={it} 
+                    formula={formula} 
+                    onSave={updateItem} 
+                    onDelete={deleteItem}
+                    categories={allCategories}
+                  />
                 ))
               )}
             </tbody>
           </table>
         </div>
+
+        {/* Pagination Bar with Page Size Selector up to 50 items */}
+        {totalItems > 0 && (
+          <div className="pagination-bar">
+            <div className="pagination-left">
+              <span>Showing <strong>{startIdx + 1}</strong>&ndash;<strong>{endIdx}</strong> of <strong>{totalItems}</strong> items</span>
+            </div>
+            <div className="pagination-right">
+              <div className="pagination-size-select">
+                <label htmlFor="pageSizeSelect">Show</label>
+                <select 
+                  id="pageSizeSelect"
+                  value={pageSize} 
+                  onChange={e => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}
+                >
+                  <option value={10}>10 items</option>
+                  <option value={20}>20 items</option>
+                  <option value={30}>30 items</option>
+                  <option value={50}>50 items (max)</option>
+                </select>
+              </div>
+
+              <div className="pagination-nav">
+                <button 
+                  type="button"
+                  className="page-btn" 
+                  disabled={safeCurrentPage <= 1}
+                  onClick={() => setCurrentPage(1)}
+                  title="First Page"
+                >
+                  &laquo;
+                </button>
+                <button 
+                  type="button"
+                  className="page-btn" 
+                  disabled={safeCurrentPage <= 1}
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  title="Previous Page"
+                >
+                  &lsaquo;
+                </button>
+
+                {getPageNumbers().map((p, idx) => {
+                  if (typeof p === 'string') {
+                    return <span key={`ellipsis-${idx}`} className="page-ellipsis">&hellip;</span>;
+                  }
+                  return (
+                    <button 
+                      type="button"
+                      key={p} 
+                      className={`page-btn ${safeCurrentPage === p ? 'active' : ''}`}
+                      onClick={() => setCurrentPage(p)}
+                    >
+                      {p}
+                    </button>
+                  );
+                })}
+
+                <button 
+                  type="button"
+                  className="page-btn" 
+                  disabled={safeCurrentPage >= totalPages}
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  title="Next Page"
+                >
+                  &rsaquo;
+                </button>
+                <button 
+                  type="button"
+                  className="page-btn" 
+                  disabled={safeCurrentPage >= totalPages}
+                  onClick={() => setCurrentPage(totalPages)}
+                  title="Last Page"
+                >
+                  &raquo;
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Datalist for categories to aid browser autocomplete */}
+      <datalist id="item-categories-list">
+        {allCategories.map(c => <option key={c} value={c} />)}
+      </datalist>
 
       {/* Bulk Import Section */}
       <div className="card">
         <div className="card-head">
           <h3>Bulk Import</h3>
-          <p>Select the Item Name and Cost Price columns in Google Sheets, copy, and paste below &mdash; one item per row.</p>
+          <p>Select the Item Name and Cost Price (and optional Category) columns in Google Sheets, copy, and paste below &mdash; one item per row.</p>
         </div>
         <div className="card-pad">
           <textarea 
@@ -338,7 +767,7 @@ export default function FormulaPage() {
           {bulkRows.length > 0 && (
             <div className="table-scroll" style={{maxHeight:'260px', overflowY:'auto', marginTop:'12px'}}>
               <table>
-                <thead><tr><th>Item Name</th><th className="num-col">Cost Price</th><th>Status</th></tr></thead>
+                <thead><tr><th>Item Name</th><th>Category</th><th className="num-col">Cost Price</th><th>Status</th></tr></thead>
                 <tbody>
                   {bulkRows.map((r, i) => {
                     let status, cls;
@@ -349,6 +778,7 @@ export default function FormulaPage() {
                     return (
                       <tr key={i}>
                         <td>{r.name || '(blank)'}</td>
+                        <td>{r.category ? <span className="badge badge-team">{r.category}</span> : '—'}</td>
                         <td className="num-col">{r.isHeader ? '' : fmtMoney(r.costPrice, formula?.currency)}</td>
                         <td className={`gp-line ${cls}`} style={{margin:0}}>{status}</td>
                       </tr>
@@ -377,7 +807,7 @@ export default function FormulaPage() {
               <label>Item</label>
               <select value={histItem} onChange={e => setHistItem(e.target.value)}>
                 <option value="__all__">All products</option>
-                {items.map(it => <option key={it.id} value={it.id}>{it.name}</option>)}
+                {items.map(it => <option key={it.id} value={it.id}>{it.name}{it.category ? ` (${it.category})` : ''}</option>)}
               </select>
             </div>
             <div className="field" style={{margin:0}}><label>From</label><input type="date" value={histFrom} onChange={e => setHistFrom(e.target.value)} /></div>

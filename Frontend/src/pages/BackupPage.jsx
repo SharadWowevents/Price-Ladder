@@ -48,7 +48,8 @@ export default function BackupPage({ defaultCollection = 'all' }) {
     if (search) {
       const s = search.toLowerCase();
       const name = (r.name || r.email || r._id || '').toLowerCase();
-      if (!name.includes(s)) return false;
+      const cat = (r.category || '').toLowerCase();
+      if (!name.includes(s) && !cat.includes(s)) return false;
     }
 
     if (r.deletedAt) {
@@ -312,11 +313,11 @@ export default function BackupPage({ defaultCollection = 'all' }) {
                   // Extract human-readable details according to collection
                   let details = '—';
                   if (r._col === 'items') {
-                    details = `Cost: ${fmtMoney(r.costPrice)} | Added: ${fmtMoney(r.amountAdded)} | End User %: ${r.pct1 ?? 0}%`;
+                    details = `${r.category ? `Category: ${r.category} | ` : ''}Cost: ${fmtMoney(r.costPrice)} | Added: ${fmtMoney(r.amountAdded)} | End User %: ${r.pct1 ?? 0}%`;
                   } else if (r._col === 'users') {
                     details = `Email: ${r.email} | Role: ${r.role}`;
                   } else if (r._col === 'quotes') {
-                    details = `List: ${fmtMoney(r.listPrice)} | End User: ${fmtMoney(r.boundary1)} | Dealer: ${fmtMoney(r.floorPrice)}`;
+                    details = `${r.category ? `Category: ${r.category} | ` : ''}List: ${fmtMoney(r.listPrice)} | End User: ${fmtMoney(r.boundary1)} | Dealer: ${fmtMoney(r.floorPrice)}`;
                   }
 
                   return (
