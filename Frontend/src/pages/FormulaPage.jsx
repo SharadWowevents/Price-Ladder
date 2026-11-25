@@ -8,8 +8,10 @@ const EditableRow = ({ item, formula, onSave, onDelete, categories }) => {
   const [form, setForm] = useState(item);
 
   useEffect(() => {
-    setForm(item);
-  }, [item]);
+    if (!editing) {
+      setForm(item);
+    }
+  }, [item, editing]);
 
   const listPrice = listPriceOf(item);
   const pct = effectivePct(item, formula);
@@ -124,15 +126,17 @@ export default function FormulaPage() {
   const [histResult, setHistResult] = useState(null);
   
   const toast = useToast();
+  const formulaInitializedRef = useRef(false);
 
   useEffect(() => {
     const unf = LocalDB.doc('config/formula').onSnapshot(snap => {
       if (snap.exists) {
         const d = snap.data();
         setFormula(d);
-        if (d.currency) setCurrencySymbol(d.currency);
-        // If user hasn't selected a specific category yet, initialize inputs from defaults
-        if (!categoryName) {
+        // Only initialize inputs once on initial load so background polling doesn't overwrite user edits
+        if (!formulaInitializedRef.current) {
+          formulaInitializedRef.current = true;
+          if (d.currency) setCurrencySymbol(d.currency);
           setCategoryPct1(d.pct1 ?? 0);
           setCategoryPct2(d.pct2 ?? 0);
           setCategoryPctFloor(d.pctFloor ?? 0);
@@ -222,10 +226,10 @@ export default function FormulaPage() {
   };
 
   // Suggestions filter for Category Name input:
-  // Shows matching categories based on input text; if no similar name matches, shows nothing
+  // Shows all available categories on click without typing; filters when typing. If no matching name is found, shows nothing.
   const matchingSuggestions = categoryName.trim()
     ? allCategories.filter(cat => cat.toLowerCase().includes(categoryName.trim().toLowerCase()))
-    : [];
+    : allCategories;
 
   // When user clicks a category from the suggestions dropdown
   const handleSelectCategory = (cat) => {
@@ -374,6 +378,10 @@ export default function FormulaPage() {
   };
 
   const updateItem = async (updated, onDoneEditing) => {
+    // Optimistically update items in state so the table immediately displays the updated row
+    setItems(prev => prev.map(it => it.id === updated.id ? { ...it, ...updated } : it));
+    if (onDoneEditing) onDoneEditing();
+
     const listPrice = listPriceOf(updated);
     const q = computeQuote(listPrice, updated);
     const currency = formula?.currency || CURRENCY_DEFAULT;
@@ -393,7 +401,6 @@ export default function FormulaPage() {
       boundary1: q.boundary1, boundary2: q.boundary2, floorPrice: q.floorPrice,
       pct1: updated.pct1, pct2: updated.pct2, pctFloor: updated.pctFloor, currency, changedAt: now
     });
-    if (onDoneEditing) onDoneEditing();
     await LocalDB.collection('items').doc(updated.id).update(updated);
     toast('Item updated', 'success');
   };
@@ -585,11 +592,10 @@ export default function FormulaPage() {
                       const val = e.target.value;
                       setCategoryName(val);
                       setSelectedCategory('');
-                      setShowCategorySuggestions(Boolean(val.trim()));
+                      setShowCategorySuggestions(true);
                     }}
-                    onFocus={() => {
-                      if (categoryName.trim()) setShowCategorySuggestions(true);
-                    }}
+                    onFocus={() => setShowCategorySuggestions(true)}
+                    onClick={() => setShowCategorySuggestions(true)}
                     autoComplete="off"
                   />
                   {categoryName && (
@@ -599,7 +605,7 @@ export default function FormulaPage() {
                       onClick={() => {
                         setCategoryName('');
                         setSelectedCategory('');
-                        setShowCategorySuggestions(false);
+                        setShowCategorySuggestions(true);
                         setCategoryPct1(formula?.pct1 ?? 0);
                         setCategoryPct2(formula?.pct2 ?? 0);
                         setCategoryPctFloor(formula?.pctFloor ?? 0);
@@ -663,6 +669,7 @@ export default function FormulaPage() {
                     setShowAddCategoryDropdown(true);
                   }}
                   onFocus={() => setShowAddCategoryDropdown(true)}
+                  onClick={() => setShowAddCategoryDropdown(true)}
                   placeholder="Select or enter category..."
                   autoComplete="off"
                 />
