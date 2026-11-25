@@ -81,8 +81,31 @@ export const parseBulkRows = (text, existingItems) => {
   const existingNames = new Set(existingItems.map(it => it.name.trim().toLowerCase()));
   const seenInPaste = new Set();
   
+  const parseLine = (line) => {
+    if (line.includes('\t')) {
+      return line.split('\t').map(c => c.trim().replace(/^["']|["']$/g, ''));
+    }
+    // Parse CSV line taking quotes into account
+    const cols = [];
+    let inQuotes = false;
+    let current = '';
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"' || char === "'") {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        cols.push(current.trim().replace(/^["']|["']$/g, ''));
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    cols.push(current.trim().replace(/^["']|["']$/g, ''));
+    return cols;
+  };
+
   return lines.map((line, idx) => {
-    const cols = line.includes('\t') ? line.split('\t') : line.split(',');
+    const cols = parseLine(line);
     const name = (cols[0] || '').trim();
     const priceRaw = (cols[1] || '').trim();
     const category = (cols[2] || '').trim();

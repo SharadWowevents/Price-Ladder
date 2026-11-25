@@ -136,6 +136,8 @@ export default function FormulaPage() {
   // Bulk import state
   const [bulkText, setBulkText] = useState('');
   const [bulkRows, setBulkRows] = useState([]);
+  const [sheetUrl, setSheetUrl] = useState('');
+  const [isFetchingSheet, setIsFetchingSheet] = useState(false);
   
   // History state
   const [histItem, setHistItem] = useState('__all__');
@@ -430,6 +432,60 @@ export default function FormulaPage() {
     toast('Item deleted', 'success');
   };
 
+  const handleDownloadSampleCsv = () => {
+    const sampleCsv = `Item Name,Cost Price,Category\nSample Laptop 15",45000.00,Electronics\nWireless Mouse,850.00,Accessories\nOffice Executive Chair,12500.00,Furniture\nMechanical Keyboard,3200.00,Accessories\n27" 4K Monitor,28000.00,Electronics\n`;
+    const blob = new Blob([sampleCsv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'sample_items_template.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast('Sample CSV downloaded.', 'success');
+  };
+
+  const handleFetchGoogleSheet = async () => {
+    const url = sheetUrl.trim();
+    if (!url) {
+      return toast('Please paste a Google Sheet link.', 'error');
+    }
+    setIsFetchingSheet(true);
+    try {
+      const res = await fetch('/api/fetch-google-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to fetch Google Sheet.');
+      }
+      setBulkText(data.csvText || '');
+      toast('Loaded data from Google Sheet successfully!', 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      setIsFetchingSheet(false);
+    }
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result;
+      if (typeof content === 'string') {
+        setBulkText(content);
+        toast(`Loaded ${file.name}`, 'success');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   const handleBulkImport = async () => {
     const importable = bulkRows.filter(r => r.valid && !r.duplicate);
     if (!importable.length) return;
@@ -441,18 +497,24 @@ export default function FormulaPage() {
     for (const r of importable) {
       try {
         const id = slugId(r.name);
-        const item = { name: r.name, category: r.category || '', costPrice: r.costPrice, amountAdded: 0, pct1: p1, pct2: p2, pctFloor: pf };
+        const itemCat = r.category ? r.category.trim() : '';
+        const catVals = itemCat ? getCategoryValues(itemCat) : formula;
+        const itemP1 = catVals?.pct1 ?? p1;
+        const itemP2 = catVals?.pct2 ?? p2;
+        const itemPf = catVals?.pctFloor ?? pf;
+
+        const item = { name: r.name, category: itemCat, costPrice: r.costPrice, amountAdded: 0, pct1: itemP1, pct2: itemP2, pctFloor: itemPf };
         const now = new Date().toISOString();
         
         await LocalDB.collection('items').doc(id).set({ ...item, createdAt: now });
         
         const q = computeQuote(r.costPrice, item);
-        await LocalDB.collection('quotes').doc(id).set({ name: r.name, category: r.category || '', listPrice: r.costPrice, ...q, currency, updatedAt: now });
+        await LocalDB.collection('quotes').doc(id).set({ name: r.name, category: itemCat, listPrice: r.costPrice, ...q, currency, updatedAt: now });
         await recordHistory(LocalDB, id, {
-          category: r.category || '',
+          category: itemCat,
           costPrice: r.costPrice, amountAdded: 0, listPrice: r.costPrice,
           boundary1: q.boundary1, boundary2: q.boundary2, floorPrice: q.floorPrice,
-          pct1: p1, pct2: p2, pctFloor: pf, currency, changedAt: now
+          pct1: itemP1, pct2: itemP2, pctFloor: itemPf, currency, changedAt: now
         });
         done++;
       } catch (e) {
@@ -926,13 +988,62 @@ export default function FormulaPage() {
       {/* Bulk Import Section */}
       <div className="card">
         <div className="card-head">
-          <h3>Bulk Import</h3>
-          <p>Select the Item Name and Cost Price (and optional Category) columns in Google Sheets, copy, and paste below &mdash; one item per row.</p>
+          <div>
+            <h3>Bulk Import</h3>
+            <p>Import items using a Google Sheet link, upload a CSV file, or copy &amp; paste data below.</p>
+          </div>
+          <div className="inline-actions" style={{ gap: '8px' }}>
+            <button 
+              type="button" 
+              className="btn btn-ghost btn-sm" 
+              onClick={handleDownloadSampleCsv}
+              title="Download pre-formatted sample CSV template"
+            >
+              &#128190; Download Sample CSV
+            </button>
+          </div>
         </div>
         <div className="card-pad">
+          {/* Google Sheet URL Import Section */}
+          <div style={{ marginBottom: '16px', background: 'var(--surface-2)', padding: '14px 16px', borderRadius: '10px', border: '1px solid var(--border)' }}>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: 'var(--ink-muted)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Import from Google Sheet Link
+            </label>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <input 
+                type="url"
+                placeholder="Paste public Google Sheet link (e.g. https://docs.google.com/spreadsheets/d/...)"
+                value={sheetUrl}
+                onChange={e => setSheetUrl(e.target.value)}
+                style={{ flex: 1, minWidth: '240px', padding: '9px 12px', border: '1px solid var(--border)', borderRadius: '8px', background: 'var(--surface)', color: 'var(--ink)', outline: 'none' }}
+              />
+              <button 
+                type="button" 
+                className="btn btn-sm" 
+                onClick={handleFetchGoogleSheet}
+                disabled={isFetchingSheet || !sheetUrl.trim()}
+              >
+                {isFetchingSheet ? 'Loading Sheet...' : 'Load from Sheet'}
+              </button>
+            </div>
+            <p className="small-note" style={{ margin: '8px 0 0' }}>
+              Tip: Ensure your Google Sheet is shared with <em>"Anyone with the link can view"</em>. Expected columns: <strong>Item Name</strong>, <strong>Cost Price</strong>, and optional <strong>Category</strong>.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <label style={{ fontSize: '12px', fontWeight: '600', color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Or Paste Data Directly
+            </label>
+            <label className="link-btn" style={{ fontSize: '12.5px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              &#128194; Upload CSV file
+              <input type="file" accept=".csv,.tsv,.txt" onChange={handleFileUpload} style={{ display: 'none' }} />
+            </label>
+          </div>
+
           <textarea 
             className="bulk-textarea" 
-            placeholder="Paste from Google Sheets here..."
+            placeholder="Paste from Google Sheets or Excel here (Item Name, Cost Price, Category)..."
             value={bulkText}
             onChange={e => setBulkText(e.target.value)}
           />

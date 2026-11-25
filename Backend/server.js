@@ -523,5 +523,62 @@ app.delete('/api/:collection/:id', async (req, res) => {
   }
 });
 
+// POST /api/fetch-google-sheet - Proxy to export and fetch CSV from Google Sheet URL
+app.post('/api/fetch-google-sheet', async (req, res) => {
+  try {
+    const { url } = req.body || {};
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'Please provide a valid Google Sheet URL.' });
+    }
+
+    let csvUrl = url.trim();
+    if (csvUrl.includes('/pubhtml') || csvUrl.includes('/pub?')) {
+      if (csvUrl.includes('/pubhtml')) {
+        csvUrl = csvUrl.replace(/\/pubhtml.*$/, '/pub?output=csv');
+      } else {
+        const u = new URL(csvUrl);
+        u.searchParams.set('output', 'csv');
+        csvUrl = u.toString();
+      }
+    } else {
+      const match = csvUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+      if (!match) {
+        return res.status(400).json({ error: 'Could not find a valid Google Spreadsheet ID in the link.' });
+      }
+      const sheetId = match[1];
+      const gidMatch = csvUrl.match(/[?&#]gid=([0-9]+)/);
+      const gid = gidMatch ? gidMatch[1] : '0';
+      csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+    }
+
+    const response = await fetch(csvUrl, {
+      redirect: 'follow',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403 || response.status === 404) {
+        return res.status(400).json({
+          error: 'Unable to access sheet. Please ensure the Google Sheet is shared as "Anyone with the link can view".'
+        });
+      }
+      return res.status(400).json({ error: `Google Sheets returned HTTP status ${response.status}.` });
+    }
+
+    const text = await response.text();
+    if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+      return res.status(400).json({
+        error: 'The link redirected to a Google login page. Please set access to "Anyone with the link can view".'
+      });
+    }
+
+    res.json({ success: true, csvText: text });
+  } catch (err) {
+    res.status(500).json({ error: `Failed to fetch Google Sheet: ${err.message}` });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
