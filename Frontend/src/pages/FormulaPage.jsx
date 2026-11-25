@@ -3,7 +3,7 @@ import { LocalDB } from '../lib/db';
 import { fmtMoney, listPriceOf, effectivePct, computeQuote, slugId, recordHistory, parseBulkRows, CURRENCY_DEFAULT } from '../lib/utils';
 import { GpLine, useToast } from '../components/UI';
 
-const EditableRow = ({ item, formula, onSave, onDelete, categories }) => {
+const EditableRow = ({ item, formula, onSave, onDelete, categories, getCategoryValues }) => {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(item);
 
@@ -12,6 +12,24 @@ const EditableRow = ({ item, formula, onSave, onDelete, categories }) => {
       setForm(item);
     }
   }, [item, editing]);
+
+  const handleCategoryChange = (newCat) => {
+    if (getCategoryValues) {
+      const vals = getCategoryValues(newCat);
+      setForm(prev => ({
+        ...prev,
+        category: newCat,
+        pct1: vals?.pct1 ?? 0,
+        pct2: vals?.pct2 ?? 0,
+        pctFloor: vals?.pctFloor ?? 0
+      }));
+    } else {
+      setForm(prev => ({
+        ...prev,
+        category: newCat
+      }));
+    }
+  };
 
   const listPrice = listPriceOf(item);
   const pct = effectivePct(item, formula);
@@ -65,7 +83,7 @@ const EditableRow = ({ item, formula, onSave, onDelete, categories }) => {
       <td>
         <input 
           value={form.category || ''} 
-          onChange={e => setForm({...form, category: e.target.value})} 
+          onChange={e => handleCategoryChange(e.target.value)} 
           placeholder="Category"
           list="item-categories-list"
           style={{ width: '100%', minWidth: '90px' }}
@@ -811,6 +829,7 @@ export default function FormulaPage() {
                     onSave={updateItem} 
                     onDelete={deleteItem}
                     categories={allCategories}
+                    getCategoryValues={getCategoryValues}
                   />
                 ))
               )}
